@@ -18,12 +18,12 @@ data "aws_ami" "ubuntu" {
 resource "aws_instance" "honeypot_host" {
   count = var.enable_ec2_instance ? 1 : 0
 
-  ami                  = data.aws_ami.ubuntu.id
-  instance_type        = var.instance_type
-  subnet_id            = aws_subnet.public_subnet.id
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.public_subnet.id
   vpc_security_group_ids = [aws_security_group.honeypot_sg.id]
-  iam_instance_profile = aws_iam_instance_profile.honeypot_instance_profile.name
-  key_name             = var.ssh_key_name != "" ? var.ssh_key_name : null
+  iam_instance_profile   = aws_iam_instance_profile.honeypot_instance_profile.name
+  key_name               = var.ssh_key_name != "" ? var.ssh_key_name : null
 
   associate_public_ip_address = true
 

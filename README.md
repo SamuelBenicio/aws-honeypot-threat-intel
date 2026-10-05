@@ -189,6 +189,40 @@ O repositório contém uma suíte automatizada em Python ([`scripts/test_honeypo
 python scripts/test_honeypot_suite.py
 ```
 
+### 8.1 Testes Unitários e Especificações Estáticas (Offline & CI/CD)
+O repositório possui uma suíte automatizada de **18 testes unitários e estáticos** em `tests/`, garantindo a confiabilidade dos parsers, conformidade das configurações do Docker e conformidade estrita da infraestrutura Terraform com padrões de segurança e menor privilégio (*Least Privilege*):
+
+```bash
+# Executando a suíte de testes unitários:
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+```text
+test_cowrie_cfg_security_settings (test_cowrie_config.TestCowrieConfiguration) ... ok
+test_cowrie_cfg_valid_ini (test_cowrie_config.TestCowrieConfiguration) ... ok
+test_docker_compose_hardening (test_cowrie_config.TestCowrieConfiguration) ... ok
+test_files_exist (test_cowrie_config.TestCowrieConfiguration) ... ok
+test_userdb_structure (test_cowrie_config.TestCowrieConfiguration) ... ok
+test_generate_markdown_report_formatting (test_log_parsers.TestLogParsers) ... ok
+test_generate_text_log_formatting (test_log_parsers.TestLogParsers) ... ok
+test_generate_threat_report_aggregation (test_log_parsers.TestLogParsers) ... ok
+test_parse_cowrie_file_full_lifecycle (test_log_parsers.TestLogParsers) ... ok
+test_parse_empty_and_corrupt_files (test_log_parsers.TestLogParsers) ... ok
+test_ec2_root_volume_encrypted (test_terraform_spec.TestTerraformSecuritySpecs) ... ok
+test_example_tfvars_sanitized (test_terraform_spec.TestTerraformSecuritySpecs) ... ok
+test_gitignore_protects_sensitive_files (test_terraform_spec.TestTerraformSecuritySpecs) ... ok
+test_iam_least_privilege (test_terraform_spec.TestTerraformSecuritySpecs) ... ok
+test_s3_bucket_lifecycle_rules (test_terraform_spec.TestTerraformSecuritySpecs) ... ok
+test_s3_bucket_public_access_block (test_terraform_spec.TestTerraformSecuritySpecs) ... ok
+test_security_group_admin_port_isolation (test_terraform_spec.TestTerraformSecuritySpecs) ... ok
+test_variables_specification (test_terraform_spec.TestTerraformSecuritySpecs) ... ok
+----------------------------------------------------------------------
+Ran 18 tests in 0.080s - OK
+```
+
+### 8.2 Testes de Integração e Verificação em Tempo Real (Ambiente AWS)
+Quando a instância na AWS está ativa, o script `scripts/test_honeypot_suite.py` executa **13 testes funcionais e de contenção ao vivo**:
+
 ```text
 ========================================================================
    SUÍTE DE TESTES E VERIFICAÇÃO DE SEGURANÇA DO HONEYPOT AWS
@@ -211,6 +245,8 @@ RELATÓRIO FINAL: 13/13 Testes Aprovados (100.0% de Cobertura)
 TODOS OS REQUISITOS DE SEGURANÇA E FUNCIONAMENTO FORAM VALIDADOS!
 ========================================================================
 ```
+
+*(Total combinado: **31 testes automatizados** cobrindo segurança, integridade de dados e infraestrutura)*
 
 ---
 
