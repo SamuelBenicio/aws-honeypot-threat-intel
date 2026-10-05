@@ -1,11 +1,27 @@
 # ==============================================================================
 # SEGURANÇA OPERACIONAL (CRÍTICO: Nunca comitar segredos ou chaves privadas)
 # ==============================================================================
+# Chaves SSH, Certificados e Arquivos Criptográficos
 *.pem
 *.key
 *.id_rsa
 *.id_ed25519
+*.id_ecdsa
+id_rsa*
+id_ed25519*
 honeypot-key.pem
+*.cer
+*.crt
+*.pfx
+*.p12
+
+# Arquivos de Variáveis de Ambiente e Credenciais
+.env
+.env.*
+*.env
+*credentials*
+*secret*
+*token*
 
 # Credenciais e Variáveis Locais do Terraform (contêm IPs pessoais)
 *.tfvars
