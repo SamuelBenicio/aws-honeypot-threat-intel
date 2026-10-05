@@ -1,0 +1,20 @@
+services:
+  cowrie:
+    image: cowrie/cowrie:latest
+    container_name: cowrie-honeypot
+    restart: unless-stopped
+    ports:
+      # Mapeia a porta pública 22 do host para a porta 2222 interna do Cowrie
+      - "22:2222"
+    volumes:
+      - ./cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
+      - ./userdb.txt:/cowrie/cowrie-git/etc/userdb.txt:ro
+      - ./var/log/cowrie:/cowrie/cowrie-git/var/log/cowrie
+      - ./var/lib/cowrie/downloads:/cowrie/cowrie-git/var/lib/cowrie/downloads
+      - ./var/lib/cowrie/tty:/cowrie/cowrie-git/var/lib/cowrie/tty
+    environment:
+      - COWRIE_HONEYPOT_NAME=srv-prod-app01
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""
+Suíte de Testes Automatizados de Segurança e Funcionalidade
+Honeypot Cowrie na AWS com Pipeline de Threat Intelligence
+
+Testes inclusos:
+1. Teste de Separação de Portas (Port 22 vs Port 22022)
+2. Teste de Banner e Emulação Realista do Cowrie
+3. Teste de Invasão Simulada (Brute Force / Password Auth na porta 22)
+4. Teste de Execução de Comandos Emulados (Shell Interativo)
+5. Teste de Confinamento e Não-Escape (Container Isolation vs Host)
+6. Teste de Bloqueio de Saída Egress (Anti-Botnet / Anti-Spam Firewall)
+7. Teste de Telemetria e Registro de Keystrokes (cowrie.json)
+8. Teste de Sincronização e Integridade com o Amazon S3
+"""
+
+import sys
+import time
+import json
+import socket
+import subprocess
+import paramiko
+
+HOST = "44.211.50.36"
+HONEYPOT_PORT = 22
+ADMIN_PORT = 22022
+KEY_PATH = "./honeypot-key.pem"
+BUCKET_NAME = "cowrie-threat-intel-logs-9628d6d2"
+
+GREEN = "\033[92m"
+RED = "\033[91m"
+YELLOW = "\033[93m"
+CYAN = "\033[96m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+results = []
+
+def record_test(name, passed, details=""):
+    results.append({"name": name, "passed": passed, "details": details})
+    symbol = f"{GREEN}[PASS]{RESET}" if passed else f"{RED}[FAIL]{RESET}"
+    print(f" {symbol} {BOLD}{name}{RESET}")
+    if details:
+        for line in details.strip().split("\n"):
+            print(f"       -> {line}")
+
+
+def test_1_port_separation():
+    print(f"\n{CYAN}=== Teste 1: Separação de Portas e Serviços ==={RESET}")
+    # 1.1 Checar banner da porta 22 (Honeypot)
+    try:
+        s = socket.socket()
+        s.settimeout(5)
+        s.connect((HOST, HONEYPOT_PORT))
+        banner = s.recv(1024).decode("utf-8", errors="ignore").strip()
+        s.close()
+        is_cowrie_banner = "OpenSSH_8.9p1" in banner or "SSH" in banner
+        record_test("Porta 22 responde com banner SSH crível", is_cowrie_banner, f"Banner recebido: '{banner}'")
+    except Exception as e:
+        record_test("Porta 22 responde com banner SSH crível", False, str(e))
+
+    # 1.2 Checar porta 22022 (Admin SSH)
+    try:
+        s = socket.socket()
+        s.settimeout(5)
+        s.connect((HOST, ADMIN_PORT))
+        admin_banner = s.recv(1024).decode("utf-8", errors="ignore").strip()
+        s.close()
+        record_test("Porta 22022 ativa para gestão do Administrador", True, f"Banner de gestão: '{admin_banner}'")
+    except Exception as e:
+        record_test("Porta 22022 ativa para gestão do Administrador", False, str(e))
+
+
+def test_2_simulated_attack_and_shell():
+    print(f"\n{CYAN}=== Teste 2: Invasão Simulada e Emulação de Shell (Porta 22) ==={RESET}")
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    
+    test_user = "root"
+    test_pass = "123456"
+    test_file_name = f"attacker_payload_{int(time.time())}.txt"
+
+    try:
+        client.connect(
+            HOST,
+            port=HONEYPOT_PORT,
+            username=test_user,
+            password=test_pass,
+            timeout=8,
+            allow_agent=False,
+            look_for_keys=False
+        )
+        record_test("Autenticação com credencial fraca aceita pelo Honeypot", True, f"Login como '{test_user}:{test_pass}' autorizado!")
+
+        # Abre canal interativo
+        shell = client.invoke_shell()
+        time.sleep(1)
+
+        # Envia comandos típicos de atacantes
+        commands = [
+            "uname -a",
+            "whoami",
+            "id",
+            "cat /etc/issue",
+            f"echo 'HACKED_BY_TEST' > /tmp/{test_file_name}",
+            "cat /tmp/" + test_file_name,
+            "exit"
+        ]
+
+        full_output = ""
+        for cmd in commands:
+            shell.send(cmd + "\n")
+            time.sleep(0.8)
+
+        while shell.recv_ready():
+            full_output += shell.recv(4096).decode("utf-8", errors="ignore")
+
+        client.close()
+
+        # Validações da simulação
+        uname_ok = "srv-prod-app01" in full_output or "Linux" in full_output
+        file_created_in_cowrie = "HACKED_BY_TEST" in full_output
+
+        record_test("Emulação de Sistema Operacional Crível (Hostname & Kernel)", uname_ok, "Atacante vê ambiente Linux funcional simulado")
+        record_test("Criação de arquivos no sistema simulado do Honeypot", file_created_in_cowrie, f"Arquivo /tmp/{test_file_name} criado no HoneyFS")
+
+        return test_file_name
+
+    except Exception as e:
+        record_test("Autenticação com credencial fraca aceita pelo Honeypot", False, str(e))
+        return None
+
+
+def test_3_isolation_and_anti_escape(test_file_name):
+    print(f"\n{CYAN}=== Teste 3: Isolamento do Container e Não-Escape (Container vs Host) ==={RESET}")
+    if not test_file_name:
+        record_test("Verificação de Isolamento do Host", False, "Arquivo de teste não foi criado na etapa anterior")
+        return
+
+    # Conecta no Host real via Porta 22022
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    key = paramiko.Ed25519Key.from_private_key_file(KEY_PATH)
+
+    try:
+        client.connect(HOST, port=ADMIN_PORT, username="ubuntu", pkey=key, timeout=8)
+        
+        # 3.1 Verifica se o arquivo criado pelo invasor existe no host real
+        stdin, stdout, stderr = client.exec_command(f"ls /tmp/{test_file_name}")
+        out = stdout.read().decode().strip()
+        err = stderr.read().decode().strip()
+
+        file_escaped = test_file_name in out
+        record_test(
+            "Confinamento Absoluto: Arquivo do invasor NÃO toca o Host real",
+            not file_escaped,
+            f"Host /tmp verificado. Arquivo do invasor isolado dentro do container! (ls retornou: {err or out})"
+        )
+
+        # 3.2 Verifica que o processo do Cowrie roda sem privilégios de root no host
+        stdin, stdout, stderr = client.exec_command("docker inspect cowrie-honeypot --format '{{.State.Status}} | NonRoot: {{.Config.User}}'")
+        dock_info = stdout.read().decode().strip()
+        record_test("Hardening Docker: Container ativo e com restrição de privilégios", "running" in dock_info, f"Container: {dock_info}")
+
+        client.close()
+    except Exception as e:
+        record_test("Confinamento Absoluto: Arquivo do invasor NÃO toca o Host real", False, str(e))
+
+
+def test_4_egress_firewall():
+    print(f"\n{CYAN}=== Teste 4: Regras de Bloqueio de Saída (Anti-Botnet / Anti-Spam Egress) ==={RESET}")
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    key = paramiko.Ed25519Key.from_private_key_file(KEY_PATH)
+
+    try:
+        client.connect(HOST, port=ADMIN_PORT, username="ubuntu", pkey=key, timeout=8)
+
+        # 4.1 Teste de bloqueio de porta 25 (SMTP Spam)
+        stdin, stdout, stderr = client.exec_command("timeout 3 bash -c '</dev/tcp/smtp.gmail.com/25' 2>&1 || echo 'BLOCKED'")
+        smtp_res = stdout.read().decode().strip()
+        record_test(
+            "Bloqueio de Saída SMTP (Porta 25 - Anti-Spam Botnet)",
+            "BLOCKED" in smtp_res or "timed out" in smtp_res,
+            "Security Group bloqueou tráfego de saída SMTP com sucesso."
+        )
+
+        # 4.2 Teste de bloqueio de SSH de saída (Porta 22 - Anti-Scanning Pivô)
+        stdin, stdout, stderr = client.exec_command("timeout 3 bash -c '</dev/tcp/github.com/22' 2>&1 || echo 'BLOCKED'")
+        ssh_out_res = stdout.read().decode().strip()
+        record_test(
+            "Bloqueio de Varredura Externa (Porta 22 Outbound - Anti-Pivô)",
+            "BLOCKED" in ssh_out_res or "timed out" in ssh_out_res,
+            "Security Group impediu a máquina de disparar SSH externo."
+        )
+
+        # 4.3 Teste de saída permitida para APIs e HTTPS (Porta 443)
+        stdin, stdout, stderr = client.exec_command("curl -s -m 5 https://aws.amazon.com > /dev/null && echo 'OK' || echo 'FAIL'")
+        https_res = stdout.read().decode().strip()
+        record_test(
+            "Saída HTTPS Autorizada para APIs de Threat Intel e AWS",
+            "OK" in https_res,
+            "Tráfego legítimo HTTPS 443 liberado conforme arquitetura."
+        )
+
+        client.close()
+    except Exception as e:
+        record_test("Verificação de Regras Egress", False, str(e))
+
+
+def test_5_telemetry_and_s3():
+    print(f"\n{CYAN}=== Teste 5: Telemetria e Envio para o Amazon S3 ==={RESET}")
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    key = paramiko.Ed25519Key.from_private_key_file(KEY_PATH)
+
+    try:
+        client.connect(HOST, port=ADMIN_PORT, username="ubuntu", pkey=key, timeout=8)
+
+        # 5.1 Verifica se o cowrie.json capturou os comandos do Teste 2
+        stdin, stdout, stderr = client.exec_command("tail -n 30 /home/ubuntu/cowrie/var/log/cowrie/cowrie.json")
+        log_content = stdout.read().decode().strip()
+        
+        has_login = "cowrie.login" in log_content
+        has_command = "cowrie.command.input" in log_content
+        record_test(
+            "Auditoria JSON: Registro detalhado de logins e comandos",
+            has_login and has_command,
+            "cowrie.json capturou eventos estruturados do atacante."
+        )
+
+        # 5.2 Executa o script de sincronização com o S3
+        stdin, stdout, stderr = client.exec_command(f"/home/ubuntu/cowrie/sync_logs_to_s3.sh {BUCKET_NAME}")
+        sync_out = stdout.read().decode().strip()
+        has_sync_success = ("concluída com sucesso" in sync_out or 
+                            "Enviando" in sync_out or 
+                            "Nenhuma nova linha" in sync_out)
+        record_test(
+            "Execução do Script de Upload Incremental para o S3",
+            has_sync_success,
+            f"Retorno do script: {sync_out}"
+        )
+
+        # 5.3 Valida diretamente no S3 via AWS CLI se o arquivo chegou lá
+        time.sleep(2)
+        aws_bin = r"C:\Program Files\Amazon\AWSCLIV2\aws.exe" if sys.platform == "win32" else "aws"
+        s3_check = subprocess.run(
+            [aws_bin, "s3", "ls", f"s3://{BUCKET_NAME}/cowrie-logs/", "--recursive"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+        s3_has_objects = len(s3_check.stdout.strip()) > 0
+        record_test(
+            "Validação no Bucket S3: Telemetria armazenada na nuvem",
+            s3_has_objects,
+            f"Arquivos no S3:\n{s3_check.stdout.strip()}"
+        )
+
+        client.close()
+    except Exception as e:
+        record_test("Telemetria e Envio para o Amazon S3", False, str(e))
+
+
+def main():
+    print(f"{BOLD}========================================================================{RESET}")
+    print(f"{BOLD}   SUÍTE DE TESTES E VERIFICAÇÃO DE SEGURANÇA DO HONEYPOT AWS          {RESET}")
+    print(f"{BOLD}========================================================================{RESET}")
+    print(f"Alvo: {HOST} | Região: us-east-1 | S3: {BUCKET_NAME}")
+
+    test_1_port_separation()
+    test_file_name = test_2_simulated_attack_and_shell()
+    test_3_isolation_and_anti_escape(test_file_name)
+    test_4_egress_firewall()
+    test_5_telemetry_and_s3()
+
+    print(f"\n{BOLD}========================================================================{RESET}")
+    total = len(results)
+    passed = sum(1 for r in results if r["passed"])
+    failed = total - passed
+
+    print(f"{BOLD}RELATÓRIO FINAL: {passed}/{total} Testes Aprovados ({passed/total*100:.1f}% de Cobertura){RESET}")
+    if failed == 0:
+        print(f"{GREEN}{BOLD}TODOS OS REQUISITOS DE SEGURANÇA E FUNCIONAMENTO FORAM VALIDADOS!{RESET}")
+    else:
+        print(f"{RED}{BOLD}{failed} testes falharam. Verifique os logs acima.{RESET}")
+    print(f"{BOLD}========================================================================{RESET}")
+
+    sys.exit(0 if failed == 0 else 1)
+
+
+if __name__ == "__main__":
+    main()

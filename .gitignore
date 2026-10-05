@@ -1,0 +1,43 @@
+# ==============================================================================
+# SEGURANÇA OPERACIONAL (CRÍTICO: Nunca comitar segredos ou chaves privadas)
+# ==============================================================================
+*.pem
+*.key
+*.id_rsa
+*.id_ed25519
+honeypot-key.pem
+
+# Credenciais e Variáveis Locais do Terraform (contêm IPs pessoais)
+*.tfvars
+!*.tfvars.example
+terraform.tfvars
+
+# Estado Local do Terraform
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+.terraform/
+.terraform.lock.hcl
+
+# Python / Ambientes Virtuais
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Logs temporários e gravações TTY binárias
+*.log
+logs_salvos/tty/
+
+# Arquivos de Sistema e IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

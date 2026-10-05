@@ -1,0 +1,15 @@
+aws_region          = "us-east-1"
+environment         = "lab"
+project_name        = "cowrie-threat-intel"
+
+# Substitua pelo seu IP público real (ex: "187.12.34.56/32") para restringir o SSH de administração
+admin_my_ip         = "0.0.0.0/0"
+admin_ssh_port      = 22022
+honeypot_ssh_port   = 22
+
+instance_type       = "t3.micro"
+enable_ec2_instance = true
+
+# Nome da sua chave SSH na AWS (se já tiver uma gerada no Console EC2 > Key Pairs)
+# Se deixar vazio e usar SSM Session Manager, nem precisa de chave SSH!
+ssh_key_name        = ""

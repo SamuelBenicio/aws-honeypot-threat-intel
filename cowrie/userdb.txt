@@ -1,0 +1,13 @@
+# User database para o Cowrie Honeypot
+# Formato: <username>:<uid>:<password>
+# '*' como senha permite qualquer senha para coletar os comandos do atacante
+root:x:*
+admin:x:*
+ubuntu:x:*
+support:x:*
+user:x:*
+guest:x:*
+test:x:*
+oracle:x:*
+postgres:x:*
+pi:x:*

@@ -1,0 +1,1 @@
+{"session":"f24c7146e10f","protocol":"ssh","src_ip":"178.208.88.6","src_port":53888,"dst_ip":"172.18.0.2","dst_port":2222,"duration_ms":120003,"eventid":"cowrie.session.closed","sensor":"70a897541bf7","uuid":"8dca3d2a-b56a-11f1-82fc-a67643ac1ed9","timestamp":"2026-10-01T10:10:12.164704Z","message":"Connection lost after 120003 milliseconds"}

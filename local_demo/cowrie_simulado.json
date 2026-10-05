@@ -1,0 +1,8 @@
+{"timestamp": "2026-09-29T19:39:10.981340+00:00", "eventid": "cowrie.login.success", "src_ip": "127.0.0.1", "username": "root", "password": "admin", "message": "Login aceito pelo Honeypot"}
+{"timestamp": "2026-09-29T19:39:12.759420+00:00", "eventid": "cowrie.command.input", "src_ip": "127.0.0.1", "input": "ls"}
+{"timestamp": "2026-09-29T19:39:17.782910+00:00", "eventid": "cowrie.command.input", "src_ip": "127.0.0.1", "input": "cat password.txt"}
+{"timestamp": "2026-09-29T19:39:19.649989+00:00", "eventid": "cowrie.command.input", "src_ip": "127.0.0.1", "input": "ls"}
+{"timestamp": "2026-09-29T19:39:25.366190+00:00", "eventid": "cowrie.command.input", "src_ip": "127.0.0.1", "input": "cat passwords.txt"}
+{"timestamp": "2026-09-29T19:39:34.020127+00:00", "eventid": "cowrie.command.input", "src_ip": "127.0.0.1", "input": "whoami"}
+{"timestamp": "2026-09-29T19:39:35.403469+00:00", "eventid": "cowrie.command.input", "src_ip": "127.0.0.1", "input": "ifconfig"}
+{"timestamp": "2026-09-29T19:39:44.471552+00:00", "eventid": "cowrie.command.input", "src_ip": "127.0.0.1", "input": "exit"}
