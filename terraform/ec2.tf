@@ -38,7 +38,7 @@ resource "aws_instance" "honeypot_host" {
     }
   }
 
-  # User Data básico para preparar o host com Docker e reconfigurar SSH administrativo
+  # User Data com Zero-Touch Bootstrap: instala Docker, configura Cowrie, inicia o container na porta 22 e agenda o S3 sync
   user_data = <<-EOF
               #!/bin/bash
               set -e
@@ -49,7 +49,7 @@ resource "aws_instance" "honeypot_host" {
 
               # Instala AWS CLI v2
               curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-              unzip awscliv2.zip
+              unzip -q awscliv2.zip
               ./aws/install
               rm -rf aws awscliv2.zip
 
@@ -76,7 +76,118 @@ resource "aws_instance" "honeypot_host" {
               systemctl enable --now ssh.service
               systemctl restart ssh.service
 
-              echo "Host preparado com sucesso para receber o Cowrie!" > /var/log/honeypot-init.log
+              # Estrutura de pastas do Cowrie
+              COWRIE_DIR="/home/ubuntu/cowrie"
+              mkdir -p "$COWRIE_DIR/var/log/cowrie"
+              mkdir -p "$COWRIE_DIR/var/lib/cowrie/downloads"
+              mkdir -p "$COWRIE_DIR/var/lib/cowrie/tty"
+
+              # cowrie.cfg
+              cat <<'CFG_EOF' > "$COWRIE_DIR/cowrie.cfg"
+              [honeypot]
+              hostname = srv-prod-app01
+              log_path = var/log/cowrie
+              download_path = var/lib/cowrie/downloads
+              tty_path = var/lib/cowrie/tty
+              fake_addr = 192.168.1.150
+
+              [ssh]
+              enabled = true
+              listen_endpoints = tcp:2222:interface=0.0.0.0
+              version = SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.7
+
+              [telnet]
+              enabled = false
+
+              [output_jsonlog]
+              enabled = true
+              logfile = var/log/cowrie/cowrie.json
+              epoch_timestamp = false
+              CFG_EOF
+
+              # userdb.txt
+              cat <<'USER_EOF' > "$COWRIE_DIR/userdb.txt"
+              root:x:123456
+              root:x:password
+              root:x:admin
+              root:x:root
+              admin:x:admin123
+              admin:x:admin
+              ubuntu:x:ubuntu
+              support:x:support
+              USER_EOF
+
+              # docker-compose.yml
+              cat <<'COMPOSE_EOF' > "$COWRIE_DIR/docker-compose.yml"
+              services:
+                cowrie:
+                  image: cowrie/cowrie:latest
+                  container_name: cowrie-honeypot
+                  restart: unless-stopped
+                  ports:
+                    - "22:2222"
+                  volumes:
+                    - ./cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
+                    - ./userdb.txt:/cowrie/cowrie-git/etc/userdb.txt:ro
+                    - ./var/log/cowrie:/cowrie/cowrie-git/var/log/cowrie
+                    - ./var/lib/cowrie/downloads:/cowrie/cowrie-git/var/lib/cowrie/downloads
+                    - ./var/lib/cowrie/tty:/cowrie/cowrie-git/var/lib/cowrie/tty
+                  environment:
+                    - COWRIE_HONEYPOT_NAME=srv-prod-app01
+                  cap_drop:
+                    - ALL
+                  security_opt:
+                    - no-new-privileges:true
+              COMPOSE_EOF
+
+              # sync_logs_to_s3.sh
+              cat <<SYNC_EOF > "$COWRIE_DIR/sync_logs_to_s3.sh"
+              #!/usr/bin/env bash
+              set -euo pipefail
+
+              BUCKET_NAME="${aws_s3_bucket.honeypot_logs.id}"
+              LOG_FILE="/home/ubuntu/cowrie/var/log/cowrie/cowrie.json"
+              STATE_FILE="/home/ubuntu/cowrie/.sync_last_position"
+
+              if [ ! -f "\$LOG_FILE" ]; then
+                  exit 0
+              fi
+
+              DATE_PATH=\$(date -u +"year=%Y/month=%m/day=%d")
+              TIMESTAMP=\$(date -u +"%Y%m%d_%H%M%S")
+              TEMP_CHUNK="/tmp/cowrie_chunk_\$${TIMESTAMP}.json"
+
+              LAST_POS=0
+              if [ -f "\$STATE_FILE" ]; then
+                  LAST_POS=\$(cat "\$STATE_FILE")
+              fi
+
+              TOTAL_LINES=\$(wc -l < "\$LOG_FILE")
+
+              if [ "\$TOTAL_LINES" -gt "\$LAST_POS" ]; then
+                  TAIL_COUNT=\$((TOTAL_LINES - LAST_POS))
+                  tail -n "\$TAIL_COUNT" "\$LOG_FILE" > "\$TEMP_CHUNK"
+                  
+                  TARGET_S3="s3://\$${BUCKET_NAME}/cowrie-logs/\$${DATE_PATH}/cowrie_\$${TIMESTAMP}.json"
+                  aws s3 cp "\$TEMP_CHUNK" "\$TARGET_S3" --only-show-errors
+                  
+                  echo "\$TOTAL_LINES" > "\$STATE_FILE"
+                  rm -f "\$TEMP_CHUNK"
+              fi
+              SYNC_EOF
+
+              chmod +x "$COWRIE_DIR/sync_logs_to_s3.sh"
+              chown -R ubuntu:ubuntu "$COWRIE_DIR"
+              chmod -R 777 "$COWRIE_DIR/var"
+
+              # Iniciar o Cowrie via Docker Compose
+              cd "$COWRIE_DIR"
+              docker compose up -d
+
+              # Agendar sincronização periódica a cada 5 minutos no cron da conta ubuntu
+              (crontab -l -u ubuntu 2>/dev/null || true; echo "*/5 * * * * /home/ubuntu/cowrie/sync_logs_to_s3.sh >> /var/log/cowrie-s3-sync.log 2>&1") | crontab -u ubuntu -
+
+              echo "Honeypot Cowrie e Sincronização S3 iniciados com sucesso!" > /var/log/honeypot-init.log
               EOF
 
   tags = {

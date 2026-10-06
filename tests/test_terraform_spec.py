@@ -105,6 +105,17 @@ class TestTerraformSecuritySpecs(unittest.TestCase):
         self.assertIn("admin_ssh_port", content)
         self.assertIn("honeypot_ssh_port", content)
 
+    def test_ec2_user_data_zero_touch_bootstrap(self):
+        """Garante que o user_data da EC2 inicializa o Cowrie na porta 22 e agenda a sincronização S3."""
+        content = self.ec2_file.read_text(encoding="utf-8")
+
+        self.assertIn("docker compose up -d", content, "O user_data deve iniciar o container do Cowrie automaticamente")
+        self.assertIn("sync_logs_to_s3.sh", content, "O user_data deve configurar o script de sincronização S3")
+        self.assertIn("crontab", content, "O user_data deve configurar o agendamento no crontab")
+        self.assertIn("cowrie.cfg", content, "O user_data deve criar o arquivo cowrie.cfg")
+        self.assertIn("userdb.txt", content, "O user_data deve criar o arquivo userdb.txt")
+        self.assertIn('"22:2222"', content, "O user_data deve expor a porta 22 para a porta interna 2222 do Cowrie")
+
 
 if __name__ == "__main__":
     unittest.main()
