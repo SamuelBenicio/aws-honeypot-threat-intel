@@ -1,0 +1,476 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 100,
+      "title": "Resumo do Perímetro - Métricas de Ataque",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-athena-datasource"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "connectionArgs": {
+            "catalog": "AwsDataCatalog",
+            "database": "cowrie_threat_intel",
+            "workgroup": "cowrie_analytics"
+          },
+          "datasource": {
+            "type": "grafana-athena-datasource"
+          },
+          "format": 1,
+          "rawSQL": "SELECT count(*) as total FROM enriched_attacks;",
+          "refId": "A"
+        }
+      ],
+      "title": "Total de Ataques Registrados",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-athena-datasource"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "connectionArgs": {
+            "catalog": "AwsDataCatalog",
+            "database": "cowrie_threat_intel",
+            "workgroup": "cowrie_analytics"
+          },
+          "datasource": {
+            "type": "grafana-athena-datasource"
+          },
+          "format": 1,
+          "rawSQL": "SELECT count(DISTINCT ip_address) as unique_ips FROM enriched_attacks;",
+          "refId": "A"
+        }
+      ],
+      "title": "IPs Únicos Atacantes",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-athena-datasource"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "connectionArgs": {
+            "catalog": "AwsDataCatalog",
+            "database": "cowrie_threat_intel",
+            "workgroup": "cowrie_analytics"
+          },
+          "datasource": {
+            "type": "grafana-athena-datasource"
+          },
+          "format": 1,
+          "rawSQL": "SELECT count(DISTINCT country_name) as total_countries FROM enriched_attacks;",
+          "refId": "A"
+        }
+      ],
+      "title": "Países de Origem",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-athena-datasource"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "connectionArgs": {
+            "catalog": "AwsDataCatalog",
+            "database": "cowrie_threat_intel",
+            "workgroup": "cowrie_analytics"
+          },
+          "datasource": {
+            "type": "grafana-athena-datasource"
+          },
+          "format": 1,
+          "rawSQL": "SELECT coalesce(sum(successful_logins), 0) as logins_comprometidos FROM enriched_attacks;",
+          "refId": "A"
+        }
+      ],
+      "title": "Logins Aceitos no Engodo",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "id": 101,
+      "title": "Distribuição Geográfica de Ameaças",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-athena-datasource"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "id": 5,
+      "options": {
+        "basemap": {
+          "config": {},
+          "name": "CartoDB Dark",
+          "type": "carto"
+        },
+        "controls": {
+          "mouseWheelZoom": true,
+          "showAttribution": false,
+          "showScale": false,
+          "showZoom": true
+        },
+        "layers": [
+          {
+            "config": {
+              "showLegend": true,
+              "style": {
+                "color": {
+                  "field": "login_attempts",
+                  "fixed": "dark-red"
+                },
+                "opacity": 0.8,
+                "rotation": {
+                  "fixed": 0,
+                  "mode": "mod"
+                },
+                "size": {
+                  "field": "login_attempts",
+                  "fixed": 5,
+                  "max": 22,
+                  "min": 6
+                },
+                "symbol": {
+                  "fixed": "circle",
+                  "mode": "fixed"
+                }
+              }
+            },
+            "location": {
+              "latitude": "latitude",
+              "longitude": "longitude",
+              "mode": "coords"
+            },
+            "name": "Atacantes",
+            "tooltip": true,
+            "type": "markers"
+          }
+        ],
+        "view": {
+          "allLayers": true,
+          "id": "zero",
+          "lat": 20,
+          "lon": 0,
+          "zoom": 2
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "connectionArgs": {
+            "catalog": "AwsDataCatalog",
+            "database": "cowrie_threat_intel",
+            "workgroup": "cowrie_analytics"
+          },
+          "datasource": {
+            "type": "grafana-athena-datasource"
+          },
+          "format": 1,
+          "rawSQL": "SELECT ip_address, country_name, city, latitude, longitude, login_attempts, successful_logins, isp FROM enriched_attacks WHERE latitude IS NOT NULL AND longitude IS NOT NULL;",
+          "refId": "A"
+        }
+      ],
+      "title": "Geomap Mundial de Origem dos Atacantes",
+      "type": "geomap"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "id": 102,
+      "title": "Análise de Táticas e Credenciais",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-athena-datasource"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 19
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "orientation": "horizontal",
+        "showValue": "always"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "connectionArgs": {
+            "catalog": "AwsDataCatalog",
+            "database": "cowrie_threat_intel",
+            "workgroup": "cowrie_analytics"
+          },
+          "datasource": {
+            "type": "grafana-athena-datasource"
+          },
+          "format": 1,
+          "rawSQL": "SELECT country_name as pais, count(*) as total_ataques FROM enriched_attacks GROUP BY country_name ORDER BY total_ataques DESC LIMIT 10;",
+          "refId": "A"
+        }
+      ],
+      "title": "Top 10 Países com Maior Volume de Ataques",
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "grafana-athena-datasource"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 19
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "orientation": "horizontal",
+        "showValue": "always"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "connectionArgs": {
+            "catalog": "AwsDataCatalog",
+            "database": "cowrie_threat_intel",
+            "workgroup": "cowrie_analytics"
+          },
+          "datasource": {
+            "type": "grafana-athena-datasource"
+          },
+          "format": 1,
+          "rawSQL": "SELECT pwd as senha_testada, count(*) as vezes_usada FROM enriched_attacks CROSS JOIN UNNEST(passwords) as t(pwd) WHERE pwd != '' GROUP BY pwd ORDER BY vezes_usada DESC LIMIT 10;",
+          "refId": "A"
+        }
+      ],
+      "title": "Top 10 Senhas Mais Testadas em Força Bruta",
+      "type": "barchart"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "id": 103,
+      "title": "Telemetria Forense de Comandos",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-athena-datasource"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "id": 8,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": true,
+          "enablePagination": true
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "connectionArgs": {
+            "catalog": "AwsDataCatalog",
+            "database": "cowrie_threat_intel",
+            "workgroup": "cowrie_analytics"
+          },
+          "datasource": {
+            "type": "grafana-athena-datasource"
+          },
+          "format": 1,
+          "rawSQL": "SELECT timestamp as horario, ip_address as ip, country_name as pais, cmd as comando_executado FROM enriched_attacks CROSS JOIN UNNEST(commands) as t(cmd) ORDER BY timestamp DESC;",
+          "refId": "A"
+        }
+      ],
+      "title": "Histórico de Comandos Executados",
+      "type": "table"
+    }
+  ],
+  "refresh": "5m",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": [
+    "threat-intel",
+    "cowrie",
+    "athena",
+    "soc",
+    "aws"
+  ],
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h"
+    ]
+  },
+  "timezone": "browser",
+  "title": "Threat Intelligence - Cowrie Honeypot SOC",
+  "uid": "cowrie-threat-intel-soc",
+  "version": 1
+}

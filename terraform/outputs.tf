@@ -27,3 +27,18 @@ output "security_group_id" {
   description = "ID do Security Group aplicado"
   value       = aws_security_group.honeypot_sg.id
 }
+
+output "athena_database_name" {
+  description = "Nome do banco de dados Athena para o Grafana"
+  value       = aws_glue_catalog_database.athena_db.name
+}
+
+output "athena_workgroup_name" {
+  description = "Nome do Workgroup Athena com trava de FinOps"
+  value       = aws_athena_workgroup.analytics.name
+}
+
+output "athena_table_name" {
+  description = "Nome da tabela externa do Athena"
+  value       = aws_glue_catalog_table.enriched_attacks.name
+}

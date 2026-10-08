@@ -57,3 +57,17 @@ variable "root_volume_size" {
   type        = number
   default     = 8
 }
+
+variable "abuseipdb_api_key" {
+  description = "Chave de API do AbuseIPDB para enriquecimento de reputação (opcional)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "discord_webhook_url" {
+  description = "URL do Webhook do Discord para alertas imediatos de ataques (opcional)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
