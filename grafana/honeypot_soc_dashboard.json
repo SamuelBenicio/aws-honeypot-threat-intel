@@ -35,7 +35,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-athena-datasource"
+        "type": "grafana-athena-datasource",
+        "uid": "bg0n3v8edi8e8e"
       },
       "gridPos": {
         "h": 4,
@@ -67,19 +68,26 @@
             "workgroup": "cowrie_analytics"
           },
           "datasource": {
-            "type": "grafana-athena-datasource"
+            "type": "grafana-athena-datasource",
+            "uid": "bg0n3v8edi8e8e"
           },
           "format": 1,
-          "rawSQL": "SELECT count(*) as total FROM enriched_attacks;",
+          "rawSQL": "SELECT sum(login_attempts) as total_tentativas FROM enriched_attacks;",
           "refId": "A"
         }
       ],
-      "title": "Total de Ataques Registrados",
-      "type": "stat"
+      "title": "Tentativas de Acesso (Força Bruta)",
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        }
+      }
     },
     {
       "datasource": {
-        "type": "grafana-athena-datasource"
+        "type": "grafana-athena-datasource",
+        "uid": "bg0n3v8edi8e8e"
       },
       "gridPos": {
         "h": 4,
@@ -111,7 +119,8 @@
             "workgroup": "cowrie_analytics"
           },
           "datasource": {
-            "type": "grafana-athena-datasource"
+            "type": "grafana-athena-datasource",
+            "uid": "bg0n3v8edi8e8e"
           },
           "format": 1,
           "rawSQL": "SELECT count(DISTINCT ip_address) as unique_ips FROM enriched_attacks;",
@@ -119,11 +128,17 @@
         }
       ],
       "title": "IPs Únicos Atacantes",
-      "type": "stat"
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        }
+      }
     },
     {
       "datasource": {
-        "type": "grafana-athena-datasource"
+        "type": "grafana-athena-datasource",
+        "uid": "bg0n3v8edi8e8e"
       },
       "gridPos": {
         "h": 4,
@@ -155,7 +170,8 @@
             "workgroup": "cowrie_analytics"
           },
           "datasource": {
-            "type": "grafana-athena-datasource"
+            "type": "grafana-athena-datasource",
+            "uid": "bg0n3v8edi8e8e"
           },
           "format": 1,
           "rawSQL": "SELECT count(DISTINCT country_name) as total_countries FROM enriched_attacks;",
@@ -163,11 +179,17 @@
         }
       ],
       "title": "Países de Origem",
-      "type": "stat"
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        }
+      }
     },
     {
       "datasource": {
-        "type": "grafana-athena-datasource"
+        "type": "grafana-athena-datasource",
+        "uid": "bg0n3v8edi8e8e"
       },
       "gridPos": {
         "h": 4,
@@ -199,7 +221,8 @@
             "workgroup": "cowrie_analytics"
           },
           "datasource": {
-            "type": "grafana-athena-datasource"
+            "type": "grafana-athena-datasource",
+            "uid": "bg0n3v8edi8e8e"
           },
           "format": 1,
           "rawSQL": "SELECT coalesce(sum(successful_logins), 0) as logins_comprometidos FROM enriched_attacks;",
@@ -207,7 +230,12 @@
         }
       ],
       "title": "Logins Aceitos no Engodo",
-      "type": "stat"
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        }
+      }
     },
     {
       "collapsed": false,
@@ -223,7 +251,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-athena-datasource"
+        "type": "grafana-athena-datasource",
+        "uid": "bg0n3v8edi8e8e"
       },
       "gridPos": {
         "h": 12,
@@ -297,7 +326,8 @@
             "workgroup": "cowrie_analytics"
           },
           "datasource": {
-            "type": "grafana-athena-datasource"
+            "type": "grafana-athena-datasource",
+            "uid": "bg0n3v8edi8e8e"
           },
           "format": 1,
           "rawSQL": "SELECT ip_address, country_name, city, latitude, longitude, login_attempts, successful_logins, isp FROM enriched_attacks WHERE latitude IS NOT NULL AND longitude IS NOT NULL;",
@@ -321,7 +351,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-athena-datasource"
+        "type": "grafana-athena-datasource",
+        "uid": "bg0n3v8edi8e8e"
       },
       "gridPos": {
         "h": 8,
@@ -347,7 +378,8 @@
             "workgroup": "cowrie_analytics"
           },
           "datasource": {
-            "type": "grafana-athena-datasource"
+            "type": "grafana-athena-datasource",
+            "uid": "bg0n3v8edi8e8e"
           },
           "format": 1,
           "rawSQL": "SELECT country_name as pais, count(*) as total_ataques FROM enriched_attacks GROUP BY country_name ORDER BY total_ataques DESC LIMIT 10;",
@@ -359,7 +391,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-athena-datasource"
+        "type": "grafana-athena-datasource",
+        "uid": "bg0n3v8edi8e8e"
       },
       "gridPos": {
         "h": 8,
@@ -385,7 +418,8 @@
             "workgroup": "cowrie_analytics"
           },
           "datasource": {
-            "type": "grafana-athena-datasource"
+            "type": "grafana-athena-datasource",
+            "uid": "bg0n3v8edi8e8e"
           },
           "format": 1,
           "rawSQL": "SELECT pwd as senha_testada, count(*) as vezes_usada FROM enriched_attacks CROSS JOIN UNNEST(passwords) as t(pwd) WHERE pwd != '' GROUP BY pwd ORDER BY vezes_usada DESC LIMIT 10;",
@@ -409,7 +443,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-athena-datasource"
+        "type": "grafana-athena-datasource",
+        "uid": "bg0n3v8edi8e8e"
       },
       "gridPos": {
         "h": 8,
@@ -435,7 +470,8 @@
             "workgroup": "cowrie_analytics"
           },
           "datasource": {
-            "type": "grafana-athena-datasource"
+            "type": "grafana-athena-datasource",
+            "uid": "bg0n3v8edi8e8e"
           },
           "format": 1,
           "rawSQL": "SELECT timestamp as horario, ip_address as ip, country_name as pais, cmd as comando_executado FROM enriched_attacks CROSS JOIN UNNEST(commands) as t(cmd) ORDER BY timestamp DESC;",
@@ -446,7 +482,7 @@
       "type": "table"
     }
   ],
-  "refresh": "5m",
+  "refresh": "1h",
   "schemaVersion": 38,
   "style": "dark",
   "tags": [
