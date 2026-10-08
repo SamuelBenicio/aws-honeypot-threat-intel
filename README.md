@@ -52,7 +52,7 @@ A solucao e dividida em cinco camadas desacopladas e orientadas a eventos:
 
 ## 2. Dashboard SOC ao Vivo (Grafana Cloud)
 
-O ambiente conta com um painel de monitoramento publicado no Grafana Cloud, permitindo a visualizacao publica e segura dos incidentes capturados pelo honeypot:
+O ambiente conta com um painel de monitoramento publicado no Grafana Cloud, permitindo a visualizacao publica e segura dos incidentes capturados pelo honeypot. A infraestrutura permanece ativa 24/7 na AWS capturando novas ameacas ininterruptamente, e os dados do dashboard sao atualizados automaticamente a cada 1 hora conforme novos acessos e tentativas de intrusao acontecem em tempo real:
 
 * **Link Publico do Dashboard:** [https://greengoose3572.grafana.net/public-dashboards/e4a92d5e603c43398ffe69c190c9af4f](https://greengoose3572.grafana.net/public-dashboards/e4a92d5e603c43398ffe69c190c9af4f)
 
@@ -90,16 +90,17 @@ Os arquivos brutos gerados pelo Cowrie (`cowrie.json`) contem apenas eventos ato
 
 ---
 
-## 4. Funcionamento Near Real-Time e Otimizacao de Custos (FinOps)
+## 4. Operacao Continua 24/7 e Atualizacao Near Real-Time
 
-O pipeline opera no modelo **Near Real-Time** (tempo quase real com micro-lotes):
+O pipeline opera ininterruptamente na nuvem AWS, mantendo o honeypot exposto para receber o fluxo constante de scanners e bots da internet publica:
 
-* **Cadencia da Coleta:** A cada intervalo programado (ex: 5 minutos), o script de sincronizacao no host envia apenas os novos registros gerados pelo Cowrie para o S3.
-* **Gatilho Instantaneo:** O evento `s3:ObjectCreated` aciona a Lambda em fracao de segundo, processando e disponibilizando os dados no Athena imediatamente.
-* **Cadencia do Grafana:** O dashboard no Grafana Cloud esta configurado com taxa de atualizacao automatica de **1 hora** (com possibilidade de atualizacao manual sob demanda pelo botao Refresh).
+* **Captura Continua 24/7:** O container do Cowrie processa conexoes na porta TCP/22 em tempo real na EC2.
+* **Cadencia da Coleta:** A cada 5 minutos, o script sincronizador no host envia os novos registros gerados pelo Cowrie para o S3.
+* **Gatilho Instantaneo:** O evento `s3:ObjectCreated` aciona a Lambda em fracao de segundo, processando, enriquecendo e disponibilizando os dados no Athena imediatamente.
+* **Atualizacao Horaria no Grafana (1h):** O dashboard publico no Grafana Cloud esta configurado com taxa de atualizacao automatica de **1 hora** (com possibilidade de atualizacao manual instantanea pelo botao Refresh). Conforme os ataques ocorrem, as novas ameacas sao incorporadas aos paineis de hora em hora.
 
-### Vantagens dessa Abordagem:
-* **Reducao de Custos de 92%:** Atualizar de 1 em 1 hora reduz as execucoes de query no Athena de 1.728 para 144 por dia caso o painel permaneca aberto, mantendo o custo mensal do Athena abaixo de US$ 0,001.
+### Otimizacao de Custos (FinOps):
+* **Reducao de Custos de 92%:** A cadencia de 1 em 1 hora reduz as execucoes de query no Athena de 1.728 para 144 por dia caso o painel permaneca aberto, mantendo o custo mensal do Athena abaixo de US$ 0,001.
 * **Preservacao de Cotas de API:** Processar em lotes agregados impede que ataques macicos de forca bruta esgotem o limite gratuito diario de consultas da API do AbuseIPDB.
 
 ---
