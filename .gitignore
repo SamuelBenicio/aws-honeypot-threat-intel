@@ -49,6 +49,7 @@ venv/
 
 # Logs temporários e gravações TTY binárias
 *.log
+logs_salvos/
 logs_salvos/tty/
 
 # Arquivos de Sistema e IDE
