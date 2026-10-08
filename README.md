@@ -56,7 +56,7 @@ O ambiente conta com um painel de monitoramento publicado no Grafana Cloud, perm
 
 * **Link Publico do Dashboard:** [https://greengoose3572.grafana.net/public-dashboards/e4a92d5e603c43398ffe69c190c9af4f](https://greengoose3572.grafana.net/public-dashboards/e4a92d5e603c43398ffe69c190c9af4f)
 
-![Dashboard SOC no Grafana Cloud](docs/images/grafana_dashboard.png)
+![Dashboard SOC no Grafana Cloud](docs/images/grafana_soc_dashboard.png)
 
 ### Paineis e Metricas Visualizadas:
 1. **Tentativas de Acesso (Forca Bruta):** Total consolidado de tentativas de autenticacao SSH realizadas contra o endpoint (mais de 1.100 eventos agregados de um total de 7.200 interacoes brutas).
@@ -131,7 +131,7 @@ aws-honeypot-threat-intel/
 ├── .gitignore                   # Politicas de exclusao de credenciais e chaves
 ├── docs/
 │   └── images/
-│       └── grafana_dashboard.png # Captura de tela do SOC Dashboard no Grafana Cloud
+│       └── grafana_soc_dashboard.png # Captura de tela do SOC Dashboard no Grafana Cloud
 ├── terraform/                   # Infraestrutura como Codigo (IaC)
 │   ├── main.tf                  # Versoes e provedor AWS
 │   ├── variables.tf             # Parametros de rede, portas e chaves
