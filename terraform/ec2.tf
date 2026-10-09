@@ -159,10 +159,14 @@ resource "aws_instance" "honeypot_host" {
 
               LAST_POS=0
               if [ -f "\$STATE_FILE" ]; then
-                  LAST_POS=\$(cat "\$STATE_FILE")
+                  LAST_POS=\$(cat "\$STATE_FILE" 2>/dev/null || echo 0)
               fi
 
               TOTAL_LINES=\$(wc -l < "\$LOG_FILE")
+
+              if [ "\$TOTAL_LINES" -lt "\$LAST_POS" ]; then
+                  LAST_POS=0
+              fi
 
               if [ "\$TOTAL_LINES" -gt "\$LAST_POS" ]; then
                   TAIL_COUNT=\$((TOTAL_LINES - LAST_POS))
@@ -185,7 +189,7 @@ resource "aws_instance" "honeypot_host" {
               docker compose up -d
 
               # Agendar sincronização periódica a cada 5 minutos no cron da conta ubuntu
-              (crontab -l -u ubuntu 2>/dev/null || true; echo "*/5 * * * * /home/ubuntu/cowrie/sync_logs_to_s3.sh >> /var/log/cowrie-s3-sync.log 2>&1") | crontab -u ubuntu -
+              (crontab -l -u ubuntu 2>/dev/null || true; echo "*/5 * * * * /home/ubuntu/cowrie/sync_logs_to_s3.sh >> /home/ubuntu/cowrie/cowrie-s3-sync.log 2>&1") | crontab -u ubuntu -
 
               echo "Honeypot Cowrie e Sincronização S3 iniciados com sucesso!" > /var/log/honeypot-init.log
               EOF

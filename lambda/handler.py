@@ -267,7 +267,6 @@ def lambda_handler(event, context):
     Handler principal acionado pelo S3 (s3:ObjectCreated:*).
     """
     print(f"[+] Iniciando processamento de evento S3: {json.dumps(event)}")
-    table = dynamodb.Table(DYNAMODB_TABLE_NAME)
 
     records = event.get("Records", [])
     total_processed = 0
