@@ -146,9 +146,25 @@ resource "aws_instance" "honeypot_host" {
               set -euo pipefail
 
               BUCKET_NAME="${aws_s3_bucket.honeypot_logs.id}"
-              LOG_FILE="/home/ubuntu/cowrie/var/log/cowrie/cowrie.json"
+              LOG_DIR="/home/ubuntu/cowrie/var/log/cowrie"
+              LOG_FILE="$LOG_DIR/cowrie.json"
               STATE_FILE="/home/ubuntu/cowrie/.sync_last_position"
 
+              # 1. Trata arquivos rotacionados da meia-noite (cowrie.json.YYYY-MM-DD)
+              for rot in "$LOG_DIR"/cowrie.json.20*; do
+                  if [ -f "$rot" ] && [ ! -f "$${rot}.synced" ]; then
+                      ROT_DATE=$(echo "$rot" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+                      if [ -n "$ROT_DATE" ]; then
+                          YEAR=$(echo "$ROT_DATE" | cut -d'-' -f1)
+                          MONTH=$(echo "$ROT_DATE" | cut -d'-' -f2)
+                          DAY=$(echo "$ROT_DATE" | cut -d'-' -f3)
+                          aws s3 cp "$rot" "s3://$${BUCKET_NAME}/cowrie-logs/year=$${YEAR}/month=$${MONTH}/day=$${DAY}/cowrie_full_$${ROT_DATE}.json" --only-show-errors
+                          touch "$${rot}.synced"
+                      fi
+                  fi
+              done
+
+              # 2. Trata o arquivo de log ativo em tempo real
               if [ ! -f "\$LOG_FILE" ]; then
                   exit 0
               fi
