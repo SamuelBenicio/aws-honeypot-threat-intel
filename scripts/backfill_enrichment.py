@@ -22,17 +22,24 @@ import handler
 BUCKET_NAME = "cowrie-threat-intel-logs-9628d6d2"
 S3_OUTPUT_KEY = "enriched-telemetry/enriched_historical_backfill.json"
 
-def run_mining():
+def run_mining(base_dir=None, bucket_name=None, s3_client=None):
     print("=" * 65)
     print("[*] INICIANDO MINERACAO E ENRIQUECIMENTO DOS DADOS HISTORICOS")
     print("=" * 65)
 
-    base_dir = Path(__file__).parent.parent / "logs_salvos"
+    if base_dir is None:
+        base_dir = Path(__file__).parent.parent / "logs_salvos"
+    else:
+        base_dir = Path(base_dir)
+
+    if bucket_name is None:
+        bucket_name = BUCKET_NAME
+
     json_files = list(base_dir.glob("**/*.json"))
 
     if not json_files:
         print("[!] Nenhum arquivo de log bruto encontrado para mineração.")
-        return
+        return []
 
     print(f"[+] Total de arquivos de log brutos encontrados: {len(json_files)}")
 
@@ -95,9 +102,11 @@ def run_mining():
     print(f"    Bucket: {BUCKET_NAME}")
     print(f"    Caminho: {S3_OUTPUT_KEY}")
 
-    s3 = boto3.client("s3", region_name="us-east-1")
-    s3.put_object(
-        Bucket=BUCKET_NAME,
+    if s3_client is None:
+        s3_client = boto3.client("s3", region_name="us-east-1")
+
+    s3_client.put_object(
+        Bucket=bucket_name,
         Key=S3_OUTPUT_KEY,
         Body=jsonl_content.encode("utf-8"),
         ContentType="application/json",
@@ -106,9 +115,10 @@ def run_mining():
 
     print("=" * 65)
     print("[OK] MINERACAO E CARGA CONCLUIDAS COM SUCESSO NO S3!")
-    print(f"   -> Pasta de destino: s3://{BUCKET_NAME}/enriched-telemetry/")
+    print(f"   -> Pasta de destino: s3://{bucket_name}/enriched-telemetry/")
     print(f"   -> Registros estruturados prontos para o Athena: {len(enriched_records)}")
     print("=" * 65)
+    return enriched_records
 
 if __name__ == "__main__":
     run_mining()

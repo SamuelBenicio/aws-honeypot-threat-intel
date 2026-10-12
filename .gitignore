@@ -46,6 +46,10 @@ __pycache__/
 env/
 venv/
 .venv/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
 
 # Logs temporários e gravações TTY binárias
 *.log

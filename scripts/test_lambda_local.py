@@ -30,10 +30,15 @@ def test_local_enrichment():
     aggregated = handler.parse_cowrie_records(lines)
     print(f"[+] IPs agregados encontrados: {len(aggregated)}")
 
+    assert len(lines) > 0, "O arquivo de log de teste deve conter linhas"
+    assert len(aggregated) > 0, "O parser deve encontrar atacantes nos logs reais"
+
     for idx, atk in enumerate(aggregated[:3], 1):
         ip = atk["ip"]
+        assert ip, "IP do atacante deve ser válido"
         print(f"\n--- Amostra {idx}: IP {ip} ---")
         geo = handler.get_geoip_info(ip)
+        assert geo["country_code"], "Código do país deve estar presente"
         print(f"    País: {geo['country_name']} ({geo['country_code']})")
         print(f"    Cidade: {geo['city']}")
         print(f"    Coordenadas: Lat {geo['latitude']}, Long {geo['longitude']}")

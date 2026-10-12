@@ -145,30 +145,79 @@ resource "aws_instance" "honeypot_host" {
               #!/usr/bin/env bash
               set -euo pipefail
 
+              # 1. Trava atomica contra execucoes concorrentes (flock)
+              LOCK_FILE="/home/ubuntu/cowrie/.sync.lock"
+              exec 200>"\$LOCK_FILE"
+              if ! flock -n 200; then
+                  echo "[!] Instancia anterior de sincronizacao ainda ativa. Ignorando execucao concorrente."
+                  exit 0
+              fi
+
               BUCKET_NAME="${aws_s3_bucket.honeypot_logs.id}"
               LOG_DIR="/home/ubuntu/cowrie/var/log/cowrie"
-              LOG_FILE="$LOG_DIR/cowrie.json"
+              LOG_FILE="\$LOG_DIR/cowrie.json"
               STATE_FILE="/home/ubuntu/cowrie/.sync_last_position"
               SYNCED_LIST="/home/ubuntu/cowrie/.synced_rotated_files"
+              AWS_BIN="/usr/local/bin/aws"
+              if ! command -v "\$AWS_BIN" >/dev/null 2>&1; then
+                  AWS_BIN="aws"
+              fi
 
-              touch "$SYNCED_LIST"
+              touch "\$SYNCED_LIST" "\$STATE_FILE"
 
-              # 1. Trata arquivos rotacionados (formato exato: cowrie.json.YYYY-MM-DD)
-              for rot in "$LOG_DIR"/cowrie.json.[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
-                  if [ -f "$rot" ]; then
-                      base=$(basename "$rot")
-                      if ! grep -qxF "$base" "$SYNCED_LIST"; then
-                          ROT_DATE=$(echo "$base" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
-                          YEAR=$(echo "$ROT_DATE" | cut -d'-' -f1)
-                          MONTH=$(echo "$ROT_DATE" | cut -d'-' -f2)
-                          DAY=$(echo "$ROT_DATE" | cut -d'-' -f3)
-                          aws s3 cp "$rot" "s3://$${BUCKET_NAME}/cowrie-logs/year=$${YEAR}/month=$${MONTH}/day=$${DAY}/cowrie_full_$${ROT_DATE}.json" --only-show-errors
-                          echo "$base" >> "$SYNCED_LIST"
+              # 2. Limpeza atomica de arquivos temporarios via trap
+              TEMP_CHUNK=""
+              cleanup() {
+                  if [ -n "\$TEMP_CHUNK" ] && [ -f "\$TEMP_CHUNK" ]; then
+                      rm -f "\$TEMP_CHUNK"
+                  fi
+              }
+              trap cleanup EXIT INT TERM
+
+              # 3. Funcao de upload com retentativa contra instabilidade transiente
+              upload_with_retry() {
+                  local src="\$1"
+                  local dst="\$2"
+                  local max_retries=3
+                  local count=1
+                  while [ "\$count" -le "\$max_retries" ]; do
+                      if "\$AWS_BIN" s3 cp "\$src" "\$dst" --only-show-errors; then
+                          return 0
+                      fi
+                      echo "[!] Falha no upload para \$dst (tentativa \$count/\$max_retries). Retentando em 2s..."
+                      sleep 2
+                      count=\$((count + 1))
+                  done
+                  return 1
+              }
+
+              # 4. Trata arquivos rotacionados (formato exato: cowrie.json.YYYY-MM-DD)
+              for rot in "\$LOG_DIR"/cowrie.json.[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
+                  if [ -f "\$rot" ]; then
+                      base=\$(basename "\$rot")
+                      if ! grep -qxF "\$base" "\$SYNCED_LIST"; then
+                          ROT_DATE=\$(echo "\$base" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+                          YEAR=\$(echo "\$ROT_DATE" | cut -d'-' -f1)
+                          MONTH=\$(echo "\$ROT_DATE" | cut -d'-' -f2)
+                          DAY=\$(echo "\$ROT_DATE" | cut -d'-' -f3)
+                          TARGET_S3="s3://\$${BUCKET_NAME}/cowrie-logs/year=\$\${YEAR}/month=\$\${MONTH}/day=\$\${DAY}/cowrie_full_\$\${ROT_DATE}.json"
+                          if upload_with_retry "\$rot" "\$TARGET_S3"; then
+                              echo "\$base" >> "\$SYNCED_LIST"
+                          fi
                       fi
                   fi
               done
 
-              # 2. Trata o arquivo de log ativo em tempo real
+              # 5. Purga local de logs rotacionados com mais de 7 dias para prevenir esgotamento de disco
+              find "\$LOG_DIR" -name 'cowrie.json.[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' -mtime +7 2>/dev/null | while read -r old_log; do
+                  old_base=\$(basename "\$old_log")
+                  if grep -qxF "\$old_base" "\$SYNCED_LIST"; then
+                      rm -f "\$old_log"
+                      echo "[+] Log antigo expurgado do disco: \$old_base"
+                  fi
+              done
+
+              # 6. Trata o arquivo de log ativo em tempo real
               if [ ! -f "\$LOG_FILE" ]; then
                   exit 0
               fi
@@ -191,11 +240,20 @@ resource "aws_instance" "honeypot_host" {
               if [ "\$TOTAL_LINES" -gt "\$LAST_POS" ]; then
                   TAIL_COUNT=\$((TOTAL_LINES - LAST_POS))
                   tail -n "\$TAIL_COUNT" "\$LOG_FILE" > "\$TEMP_CHUNK"
-                  
+
+                  # Valida integridade da ultima linha (prevencao contra JSON incompleto / corte concorrente)
+                  LAST_CHAR=\$(tail -c 2 "\$TEMP_CHUNK" 2>/dev/null | tr -d '\n\r' || true)
+                  EFFECTIVE_LINES="\$TOTAL_LINES"
+                  if [ "\$LAST_CHAR" != "}" ] && [ "\$TAIL_COUNT" -gt 1 ]; then
+                      head -n -1 "\$TEMP_CHUNK" > "\${TEMP_CHUNK}.clean"
+                      mv "\${TEMP_CHUNK}.clean" "\$TEMP_CHUNK"
+                      EFFECTIVE_LINES=\$((TOTAL_LINES - 1))
+                  fi
+
                   TARGET_S3="s3://\$${BUCKET_NAME}/cowrie-logs/\$${DATE_PATH}/cowrie_\$${TIMESTAMP}.json"
-                  aws s3 cp "\$TEMP_CHUNK" "\$TARGET_S3" --only-show-errors
-                  
-                  echo "\$TOTAL_LINES" > "\$STATE_FILE"
+                  if upload_with_retry "\$TEMP_CHUNK" "\$TARGET_S3"; then
+                      echo "\$EFFECTIVE_LINES" > "\$STATE_FILE"
+                  fi
                   rm -f "\$TEMP_CHUNK"
               fi
               SYNC_EOF

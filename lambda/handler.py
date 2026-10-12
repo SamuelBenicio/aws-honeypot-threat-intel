@@ -279,6 +279,11 @@ def lambda_handler(event, context):
         if not bucket or not key:
             continue
 
+        # Trava de segurança defensiva: descarta objetos que não pertençam aos logs brutos (previne loops)
+        if not key.startswith("cowrie-logs/"):
+            print(f"[!] Objeto ignorado (fora do prefixo de ingestão 'cowrie-logs/'): {key}")
+            continue
+
         print(f"[+] Baixando arquivo s3://{bucket}/{key}...")
         try:
             response = s3_client.get_object(Bucket=bucket, Key=key)
