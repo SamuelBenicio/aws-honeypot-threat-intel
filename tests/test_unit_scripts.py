@@ -201,6 +201,94 @@ class TestUnitScripts(unittest.TestCase):
             self.assertEqual(call_kwargs["ServerSideEncryption"], "AES256")
             self.assertEqual(call_kwargs["ContentType"], "application/json")
 
+    # -------------------------------------------------------------------------
+    # Testes do parse_logs.py
+    # -------------------------------------------------------------------------
+    def test_parse_logs_full_cycle(self):
+        """Valida parsing de sessões e geração de relatórios Markdown e Syslog"""
+        import scripts.parse_logs as parser
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sample_json = Path(tmp_dir) / "test_session.json"
+            sample_md = Path(tmp_dir) / "test_session.md"
+            sample_txt = Path(tmp_dir) / "test_session.txt"
+
+            events = [
+                {"session": "s1", "eventid": "cowrie.session.connect", "timestamp": "2026-10-07T10:00:00Z", "src_ip": "198.51.100.5", "src_port": 2222},
+                {"session": "s1", "eventid": "cowrie.client.version", "version": "SSH-2.0-OpenSSH_8.0"},
+                {"session": "s1", "eventid": "cowrie.client.kex", "hassh": "abc123hassh"},
+                {"session": "s1", "eventid": "cowrie.login.success", "username": "root", "password": "toor", "timestamp": "2026-10-07T10:00:01Z"},
+                {"session": "s1", "eventid": "cowrie.command.input", "input": "id", "timestamp": "2026-10-07T10:00:02Z"},
+                {"session": "s1", "eventid": "cowrie.session.file_download", "shasum": "sha256fake", "url": "http://evil/a", "timestamp": "2026-10-07T10:00:03Z"},
+                {"session": "s1", "eventid": "cowrie.session.closed", "duration": 12.5, "timestamp": "2026-10-07T10:00:12Z"}
+            ]
+
+            with open(sample_json, "w", encoding="utf-8") as f:
+                for ev in events:
+                    f.write(json.dumps(ev) + "\n")
+
+            sessions = parser.parse_cowrie_file(str(sample_json))
+            self.assertIn("s1", sessions)
+            self.assertEqual(sessions["s1"]["ip"], "198.51.100.5")
+            self.assertEqual(len(sessions["s1"]["logins"]), 1)
+            self.assertEqual(len(sessions["s1"]["commands"]), 1)
+
+            parser.generate_markdown_report(sessions, str(sample_json), str(sample_md))
+            self.assertTrue(sample_md.exists())
+            md_content = sample_md.read_text(encoding="utf-8")
+            self.assertIn("198.51.100.5", md_content)
+            self.assertIn("root", md_content)
+
+            parser.generate_text_log(sessions, str(sample_txt))
+            self.assertTrue(sample_txt.exists())
+            txt_content = sample_txt.read_text(encoding="utf-8")
+            self.assertIn("NOVA CONEXAO", txt_content)
+            self.assertIn("COMANDO DIGITADO", txt_content)
+
+    # -------------------------------------------------------------------------
+    # Testes do generate_threat_report.py
+    # -------------------------------------------------------------------------
+    @patch("urllib.request.urlopen")
+    def test_generate_threat_report_flow(self, mock_urlopen):
+        """Valida geracao do relatorio executivo de ameacas"""
+        import scripts.generate_threat_report as rep_gen
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "country": "Germany",
+            "city": "Frankfurt",
+            "org": "Hosting GmbH"
+        }).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            logs_dir = Path(tmp_dir) / "logs_salvos" / "year=2026" / "month=10" / "day=01"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            log_file = logs_dir / "cowrie_rep_test.json"
+
+            events = [
+                {"eventid": "cowrie.login.success", "src_ip": "198.51.100.8", "username": "root", "password": "pwd"},
+                {"eventid": "cowrie.command.input", "src_ip": "198.51.100.8", "input": "uname -a"},
+            ]
+            with open(log_file, "w", encoding="utf-8") as f:
+                for ev in events:
+                    f.write(json.dumps(ev) + "\n")
+
+            with patch("scripts.generate_threat_report.glob.glob", return_value=[str(log_file)]):
+                orig_path = Path("logs_salvos/RELATORIO_THREAT_INTEL_REAL.md")
+                orig_content = orig_path.read_text(encoding="utf-8") if orig_path.exists() else None
+                try:
+                    Path("logs_salvos").mkdir(exist_ok=True)
+                    rep_gen.generate_report()
+                    self.assertTrue(orig_path.exists())
+                finally:
+                    if orig_content is not None:
+                        orig_path.write_text(orig_content, encoding="utf-8")
+                    elif orig_path.exists():
+                        orig_path.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()
+
