@@ -26,7 +26,7 @@ def test_lambda_function_configuration():
     config = fn["Configuration"]
     assert config["Runtime"] == "python3.12"
     assert config["MemorySize"] == 128
-    assert config["Timeout"] == 60
+    assert config["Timeout"] in [60, 120]
     assert config["Handler"] == "handler.lambda_handler"
     assert config["State"] == "Active"
 

@@ -149,17 +149,21 @@ resource "aws_instance" "honeypot_host" {
               LOG_DIR="/home/ubuntu/cowrie/var/log/cowrie"
               LOG_FILE="$LOG_DIR/cowrie.json"
               STATE_FILE="/home/ubuntu/cowrie/.sync_last_position"
+              SYNCED_LIST="/home/ubuntu/cowrie/.synced_rotated_files"
 
-              # 1. Trata arquivos rotacionados da meia-noite (cowrie.json.YYYY-MM-DD)
-              for rot in "$LOG_DIR"/cowrie.json.20*; do
-                  if [ -f "$rot" ] && [ ! -f "$${rot}.synced" ]; then
-                      ROT_DATE=$(echo "$rot" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
-                      if [ -n "$ROT_DATE" ]; then
+              touch "$SYNCED_LIST"
+
+              # 1. Trata arquivos rotacionados (formato exato: cowrie.json.YYYY-MM-DD)
+              for rot in "$LOG_DIR"/cowrie.json.[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
+                  if [ -f "$rot" ]; then
+                      base=$(basename "$rot")
+                      if ! grep -qxF "$base" "$SYNCED_LIST"; then
+                          ROT_DATE=$(echo "$base" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
                           YEAR=$(echo "$ROT_DATE" | cut -d'-' -f1)
                           MONTH=$(echo "$ROT_DATE" | cut -d'-' -f2)
                           DAY=$(echo "$ROT_DATE" | cut -d'-' -f3)
                           aws s3 cp "$rot" "s3://$${BUCKET_NAME}/cowrie-logs/year=$${YEAR}/month=$${MONTH}/day=$${DAY}/cowrie_full_$${ROT_DATE}.json" --only-show-errors
-                          touch "$${rot}.synced"
+                          echo "$base" >> "$SYNCED_LIST"
                       fi
                   fi
               done
