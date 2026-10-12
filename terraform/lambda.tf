@@ -36,23 +36,29 @@ resource "aws_iam_policy" "lambda_policy" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      # Leitura restrita de logs brutos
+      # Leitura restrita de logs brutos e amostras de malware
       {
-        Sid    = "AllowReadCowrieRawLogs"
+        Sid    = "AllowReadCowrieRawLogsAndMalware"
         Effect = "Allow"
         Action = [
           "s3:GetObject"
         ]
-        Resource = "${aws_s3_bucket.honeypot_logs.arn}/cowrie-logs/*"
+        Resource = [
+          "${aws_s3_bucket.honeypot_logs.arn}/cowrie-logs/*",
+          "${aws_s3_bucket.honeypot_logs.arn}/malware-samples/*"
+        ]
       },
-      # Escrita restrita de logs enriquecidos para o Athena
+      # Escrita restrita de logs e malwares enriquecidos para o Athena
       {
-        Sid    = "AllowWriteEnrichedTelemetry"
+        Sid    = "AllowWriteEnrichedTelemetryAndMalware"
         Effect = "Allow"
         Action = [
           "s3:PutObject"
         ]
-        Resource = "${aws_s3_bucket.honeypot_logs.arn}/enriched-telemetry/*"
+        Resource = [
+          "${aws_s3_bucket.honeypot_logs.arn}/enriched-telemetry/*",
+          "${aws_s3_bucket.honeypot_logs.arn}/enriched-malware/*"
+        ]
       },
       # Permissões padrão para logs no CloudWatch
       {
@@ -88,10 +94,13 @@ resource "aws_lambda_function" "threat_intel_processor" {
 
   environment {
     variables = {
-      ENRICHED_S3_PREFIX  = "enriched-telemetry/"
-      ABUSEIPDB_API_KEY   = var.abuseipdb_api_key
-      DISCORD_WEBHOOK_URL = var.discord_webhook_url
-      TTL_DAYS            = tostring(var.enriched_logs_retention_days)
+      ENRICHED_S3_PREFIX         = "enriched-telemetry/"
+      ENRICHED_MALWARE_S3_PREFIX = "enriched-malware/"
+      MALWARE_S3_PREFIX          = "malware-samples/"
+      ABUSEIPDB_API_KEY          = var.abuseipdb_api_key
+      VIRUSTOTAL_API_KEY         = var.virustotal_api_key
+      DISCORD_WEBHOOK_URL        = var.discord_webhook_url
+      TTL_DAYS                   = tostring(var.enriched_logs_retention_days)
     }
   }
 
@@ -111,7 +120,7 @@ resource "aws_lambda_permission" "allow_s3_invocation" {
 }
 
 # 6. S3 Event Notification Trigger (Gatilho automático)
-# CRÍTICO: Dispara APENAS para o prefixo 'cowrie-logs/' para evitar loops recursivos!
+# Dispara para logs brutos (cowrie-logs/) e para amostras binárias (malware-samples/)
 resource "aws_s3_bucket_notification" "bucket_notification" {
   bucket = aws_s3_bucket.honeypot_logs.id
 
@@ -120,6 +129,12 @@ resource "aws_s3_bucket_notification" "bucket_notification" {
     events              = ["s3:ObjectCreated:*"]
     filter_prefix       = "cowrie-logs/"
     filter_suffix       = ".json"
+  }
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.threat_intel_processor.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "malware-samples/"
   }
 
   depends_on = [aws_lambda_permission.allow_s3_invocation]

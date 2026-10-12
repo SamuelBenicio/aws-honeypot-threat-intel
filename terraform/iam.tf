@@ -25,13 +25,16 @@ resource "aws_iam_policy" "s3_upload_logs_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AllowPutCowrieLogsOnly"
+        Sid    = "AllowPutCowrieLogsAndMalware"
         Effect = "Allow"
         Action = [
           "s3:PutObject",
           "s3:AbortMultipartUpload"
         ]
-        Resource = "${aws_s3_bucket.honeypot_logs.arn}/cowrie-logs/*"
+        Resource = [
+          "${aws_s3_bucket.honeypot_logs.arn}/cowrie-logs/*",
+          "${aws_s3_bucket.honeypot_logs.arn}/malware-samples/*"
+        ]
       }
     ]
   })

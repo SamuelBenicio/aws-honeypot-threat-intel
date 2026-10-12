@@ -200,61 +200,82 @@ resource "aws_instance" "honeypot_host" {
                           YEAR=\$(echo "\$ROT_DATE" | cut -d'-' -f1)
                           MONTH=\$(echo "\$ROT_DATE" | cut -d'-' -f2)
                           DAY=\$(echo "\$ROT_DATE" | cut -d'-' -f3)
-                          TARGET_S3="s3://\$${BUCKET_NAME}/cowrie-logs/year=\$\${YEAR}/month=\$\${MONTH}/day=\$\${DAY}/cowrie_full_\$\${ROT_DATE}.json"
-                          if upload_with_retry "\$rot" "\$TARGET_S3"; then
-                              echo "\$base" >> "\$SYNCED_LIST"
+                          TARGET_S3="s3://$BUCKET_NAME/cowrie-logs/year=$YEAR/month=$MONTH/day=$DAY/cowrie_full_$ROT_DATE.json"
+                          if upload_with_retry "$rot" "$TARGET_S3"; then
+                              echo "$base" >> "$SYNCED_LIST"
                           fi
                       fi
                   fi
               done
 
               # 5. Purga local de logs rotacionados com mais de 7 dias para prevenir esgotamento de disco
-              find "\$LOG_DIR" -name 'cowrie.json.[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' -mtime +7 2>/dev/null | while read -r old_log; do
-                  old_base=\$(basename "\$old_log")
-                  if grep -qxF "\$old_base" "\$SYNCED_LIST"; then
-                      rm -f "\$old_log"
-                      echo "[+] Log antigo expurgado do disco: \$old_base"
+              find "$LOG_DIR" -name 'cowrie.json.[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' -mtime +7 2>/dev/null | while read -r old_log; do
+                  old_base=$(basename "$old_log")
+                  if grep -qxF "$old_base" "$SYNCED_LIST"; then
+                      rm -f "$old_log"
+                      echo "[+] Log antigo expurgado do disco: $old_base"
                   fi
               done
 
               # 6. Trata o arquivo de log ativo em tempo real
-              if [ ! -f "\$LOG_FILE" ]; then
+              if [ ! -f "$LOG_FILE" ]; then
                   exit 0
               fi
 
-              DATE_PATH=\$(date -u +"year=%Y/month=%m/day=%d")
-              TIMESTAMP=\$(date -u +"%Y%m%d_%H%M%S")
-              TEMP_CHUNK="/tmp/cowrie_chunk_\$${TIMESTAMP}.json"
+              DATE_PATH=$(date -u +"year=%Y/month=%m/day=%d")
+              TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
+              TEMP_CHUNK="/tmp/cowrie_chunk_$TIMESTAMP.json"
 
               LAST_POS=0
-              if [ -f "\$STATE_FILE" ]; then
-                  LAST_POS=\$(cat "\$STATE_FILE" 2>/dev/null || echo 0)
+              if [ -f "$STATE_FILE" ]; then
+                  LAST_POS=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
               fi
 
-              TOTAL_LINES=\$(wc -l < "\$LOG_FILE")
+              TOTAL_LINES=$(wc -l < "$LOG_FILE")
 
-              if [ "\$TOTAL_LINES" -lt "\$LAST_POS" ]; then
+              if [ "$TOTAL_LINES" -lt "$LAST_POS" ]; then
                   LAST_POS=0
               fi
 
-              if [ "\$TOTAL_LINES" -gt "\$LAST_POS" ]; then
-                  TAIL_COUNT=\$((TOTAL_LINES - LAST_POS))
-                  tail -n "\$TAIL_COUNT" "\$LOG_FILE" > "\$TEMP_CHUNK"
+              if [ "$TOTAL_LINES" -gt "$LAST_POS" ]; then
+                  TAIL_COUNT=$((TOTAL_LINES - LAST_POS))
+                  tail -n "$TAIL_COUNT" "$LOG_FILE" > "$TEMP_CHUNK"
 
                   # Valida integridade da ultima linha (prevencao contra JSON incompleto / corte concorrente)
-                  LAST_CHAR=\$(tail -c 2 "\$TEMP_CHUNK" 2>/dev/null | tr -d '\n\r' || true)
-                  EFFECTIVE_LINES="\$TOTAL_LINES"
-                  if [ "\$LAST_CHAR" != "}" ] && [ "\$TAIL_COUNT" -gt 1 ]; then
-                      head -n -1 "\$TEMP_CHUNK" > "\${TEMP_CHUNK}.clean"
-                      mv "\${TEMP_CHUNK}.clean" "\$TEMP_CHUNK"
-                      EFFECTIVE_LINES=\$((TOTAL_LINES - 1))
+                  LAST_CHAR=$(tail -c 2 "$TEMP_CHUNK" 2>/dev/null | tr -d '\n\r' || true)
+                  EFFECTIVE_LINES="$TOTAL_LINES"
+                  if [ "$LAST_CHAR" != "}" ] && [ "$TAIL_COUNT" -gt 1 ]; then
+                      head -n -1 "$TEMP_CHUNK" > "$TEMP_CHUNK.clean"
+                      mv "$TEMP_CHUNK.clean" "$TEMP_CHUNK"
+                      EFFECTIVE_LINES=$((TOTAL_LINES - 1))
                   fi
 
-                  TARGET_S3="s3://\$${BUCKET_NAME}/cowrie-logs/\$${DATE_PATH}/cowrie_\$${TIMESTAMP}.json"
-                  if upload_with_retry "\$TEMP_CHUNK" "\$TARGET_S3"; then
-                      echo "\$EFFECTIVE_LINES" > "\$STATE_FILE"
+                  TARGET_S3="s3://$BUCKET_NAME/cowrie-logs/$DATE_PATH/cowrie_$TIMESTAMP.json"
+                  if upload_with_retry "$TEMP_CHUNK" "$TARGET_S3"; then
+                      echo "$EFFECTIVE_LINES" > "$STATE_FILE"
                   fi
-                  rm -f "\$TEMP_CHUNK"
+                  rm -f "$TEMP_CHUNK"
+              fi
+
+              # 7. Sincronizacao de binarios e scripts maliciosos reais (malware-samples/)
+              MALWARE_DIR="/home/ubuntu/cowrie/var/lib/cowrie/downloads"
+              SYNCED_MALWARE_LIST="/home/ubuntu/cowrie/.synced_malware_files"
+              touch "$SYNCED_MALWARE_LIST"
+
+              if [ -d "$MALWARE_DIR" ]; then
+                  for sample in "$MALWARE_DIR"/*; do
+                      if [ -f "$sample" ]; then
+                          sample_hash=$(basename "$sample")
+                          if [ $${#sample_hash} -eq 64 ] && ! grep -qxF "$sample_hash" "$SYNCED_MALWARE_LIST"; then
+                              TARGET_S3="s3://$BUCKET_NAME/malware-samples/$sample_hash"
+                              if upload_with_retry "$sample" "$TARGET_S3"; then
+                                  echo "$sample_hash" >> "$SYNCED_MALWARE_LIST"
+                                  rm -f "$sample"
+                                  echo "[+] Malware enviado ao S3 e removido do disco local: $sample_hash"
+                              fi
+                          fi
+                      fi
+                  done
               fi
               SYNC_EOF
 

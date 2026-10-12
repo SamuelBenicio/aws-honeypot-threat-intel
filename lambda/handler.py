@@ -1,11 +1,13 @@
 """
-AWS Lambda Handler: Threat Intelligence & Enrichment Engine
-Processa logs do Cowrie (S3), enriquece com GeoIP e AbuseIPDB, e persiste no DynamoDB.
-Runtime: Python 3.12 (Zero dependências externas pesadas - usa bibliotecas padrão urllib e boto3)
+AWS Lambda Handler: Threat Intelligence & Automated Malware Forensics Engine
+Processa logs do Cowrie (S3), enriquece com GeoIP e AbuseIPDB, e analisa malwares e botnets capturados (VirusTotal + Análise Estática ELF/Script).
+Runtime: Python 3.12 (Zero dependências externas pesadas - usa bibliotecas padrão hashlib, re, urllib e boto3)
 """
 
 import os
 import json
+import hashlib
+import re
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -19,13 +21,17 @@ s3_client = boto3.client("s3")
 
 # Variáveis de ambiente configuráveis
 ENRICHED_S3_PREFIX = os.environ.get("ENRICHED_S3_PREFIX", "enriched-telemetry/")
+ENRICHED_MALWARE_S3_PREFIX = os.environ.get("ENRICHED_MALWARE_S3_PREFIX", "enriched-malware/")
+MALWARE_S3_PREFIX = os.environ.get("MALWARE_S3_PREFIX", "malware-samples/")
 ABUSEIPDB_API_KEY = os.environ.get("ABUSEIPDB_API_KEY", "")
+VIRUSTOTAL_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
-TTL_DAYS = int(os.environ.get("TTL_DAYS", "30"))
+TTL_DAYS = int(os.environ.get("TTL_DAYS", "60"))
 
 # Cache em memória durante o ciclo de vida do container Lambda
 GEOIP_CACHE = {}
 ABUSE_CACHE = {}
+VT_CACHE = {}
 
 
 def get_geoip_info(ip_address: str) -> dict:
@@ -65,7 +71,6 @@ def get_geoip_info(ip_address: str) -> dict:
     except Exception as e:
         print(f"[!] Falha na resolução GeoIP para {ip_address}: {e}")
 
-    # Fallback seguro
     fallback = {
         "country_code": "XX",
         "country_name": "Desconhecido",
@@ -129,11 +134,211 @@ def get_abuseipdb_score(ip_address: str) -> dict:
     return fallback
 
 
+def get_virustotal_report(sha256_hash: str) -> dict:
+    """
+    Consulta a API pública gratuita v3 do VirusTotal para coletar taxa de detecção e classificação oficial.
+    Se a chave de API não estiver configurada, executa fallback neutro gracioso.
+    """
+    if not VIRUSTOTAL_API_KEY:
+        return {
+            "vt_checked": False,
+            "vt_positives": 0,
+            "vt_total": 0,
+            "malware_family": "Desconhecido (Sem API Key)",
+            "vt_permalink": f"https://www.virustotal.com/gui/file/{sha256_hash}",
+        }
+
+    if sha256_hash in VT_CACHE:
+        return VT_CACHE[sha256_hash]
+
+    url = f"https://www.virustotal.com/api/v3/files/{sha256_hash}"
+    headers = {
+        "x-apikey": VIRUSTOTAL_API_KEY,
+        "Accept": "application/json",
+        "User-Agent": "Cowrie-Threat-Intel/2.0",
+    }
+
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            data = body.get("data", {})
+            attr = data.get("attributes", {})
+            stats = attr.get("last_analysis_stats", {})
+            positives = int(stats.get("malicious", 0))
+            total = sum(int(v) for v in stats.values()) if stats else 0
+
+            # Extrai classificação de família sugerida
+            pop_class = attr.get("popular_threat_classification", {})
+            family = pop_class.get("suggested_threat_label") or attr.get("meaningful_name") or "Malware"
+
+            res = {
+                "vt_checked": True,
+                "vt_positives": positives,
+                "vt_total": total,
+                "malware_family": str(family),
+                "vt_permalink": f"https://www.virustotal.com/gui/file/{sha256_hash}",
+            }
+            VT_CACHE[sha256_hash] = res
+            return res
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            # Amostra inédita ou zero-day não catalogada no VirusTotal
+            res = {
+                "vt_checked": True,
+                "vt_positives": 0,
+                "vt_total": 0,
+                "malware_family": "Inédito / Zero-Day (Não Catalogado)",
+                "vt_permalink": f"https://www.virustotal.com/gui/file/{sha256_hash}",
+            }
+            VT_CACHE[sha256_hash] = res
+            return res
+        print(f"[!] Erro HTTP VirusTotal ({sha256_hash}): {e.code} - {e.reason}")
+    except Exception as e:
+        print(f"[!] Falha na consulta VirusTotal ({sha256_hash}): {e}")
+
+    fallback = {
+        "vt_checked": False,
+        "vt_positives": 0,
+        "vt_total": 0,
+        "malware_family": "Desconhecido",
+        "vt_permalink": f"https://www.virustotal.com/gui/file/{sha256_hash}",
+    }
+    VT_CACHE[sha256_hash] = fallback
+    return fallback
+
+
+def inspect_binary_static(binary_data: bytes, sha256_hash: str) -> dict:
+    """
+    Executa análise estática autônoma no binário:
+    - Verificação de Magic Header (ELF Linux, Script Shell, PE Windows)
+    - Extração de strings e mineração de IoCs (IPs de C2 e URLs secundárias)
+    - Classificação heurística de botnets (Mirai, Gafgyt, XMRig)
+    """
+    md5_hash = hashlib.md5(binary_data).hexdigest()
+    file_size = len(binary_data)
+
+    # 1. Identificação do formato do executável
+    magic_type = "Arquivo Binário Genérico"
+    if binary_data.startswith(b"\x7fELF"):
+        arch_desc = "Linux"
+        if len(binary_data) >= 20:
+            e_machine = binary_data[18] | (binary_data[19] << 8)
+            arch_map = {
+                3: "x86 (i386)",
+                62: "x86_64 (AMD64)",
+                40: "ARM 32-bit",
+                183: "AArch64 (ARM 64-bit)",
+                8: "MIPS",
+                10: "MIPS-II",
+                20: "PowerPC",
+                21: "PowerPC 64",
+            }
+            arch_desc = arch_map.get(e_machine, f"Machine {e_machine}")
+        magic_type = f"ELF Binary ({arch_desc})"
+    elif binary_data.startswith(b"MZ"):
+        magic_type = "Windows PE Executable"
+    elif binary_data.startswith(b"#!/") or b"bin/sh" in binary_data[:128] or b"bin/bash" in binary_data[:128]:
+        magic_type = "Linux Shell Script"
+
+    # 2. Extração de strings imprimíveis (ASCII >= 4 caracteres)
+    raw_strings = re.findall(rb"[\x20-\x7e]{4,}", binary_data)
+    decoded_strings = [s.decode("utf-8", errors="ignore") for s in raw_strings]
+    full_text = " ".join(decoded_strings).lower()
+
+    # 3. Mineração de IPs de Command & Control (C2)
+    ip_pattern = re.compile(r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b")
+    found_ips = ip_pattern.findall(" ".join(decoded_strings))
+    c2_ips = []
+    for ip in found_ips:
+        if not ip.startswith(("127.", "10.", "192.168.", "172.16.", "0.0.", "255.255.")) and ip not in ("1.1.1.1", "8.8.8.8"):
+            if ip not in c2_ips:
+                c2_ips.append(ip)
+
+    # 4. Mineração de URLs embutidas
+    url_pattern = re.compile(r"https?://[^\s<>\"']+|ftp://[^\s<>\"']+")
+    found_urls = url_pattern.findall(" ".join(decoded_strings))
+    unique_urls = list(dict.fromkeys(found_urls))
+
+    # 5. Classificação por assinaturas de botnet conhecidas
+    yara_tags = []
+    heuristic_family = "Desconhecido"
+
+    if any(k in full_text for k in ["mirai", "busybox", "dvrhelper", "killer_kill", "post /cdn-cgi/"]):
+        yara_tags.append("mirai_variant")
+        heuristic_family = "Mirai Botnet"
+    if any(k in full_text for k in ["gafgyt", "bashlite", "lizkebab", "qbot"]):
+        yara_tags.append("gafgyt_variant")
+        if heuristic_family == "Desconhecido":
+            heuristic_family = "Gafgyt (Bashlite)"
+    if any(k in full_text for k in ["stratum+tcp", "xmr", "monero", "xmrig", "cryptonight"]):
+        yara_tags.append("cryptominer")
+        heuristic_family = "Coinminer (XMRig)"
+    if any(k in full_text for k in ["wget -q", "curl -o", "chmod 777", "chmod +x"]):
+        yara_tags.append("payload_dropper")
+        if heuristic_family == "Desconhecido":
+            heuristic_family = "Malware Dropper"
+
+    return {
+        "sha256": sha256_hash,
+        "md5": md5_hash,
+        "file_size_bytes": file_size,
+        "magic_type": magic_type,
+        "extracted_ips": c2_ips[:15],
+        "extracted_urls": unique_urls[:15],
+        "yara_tags": yara_tags,
+        "heuristic_family": heuristic_family,
+    }
+
+
+def send_discord_malware_alert(malware_item: dict):
+    """Envia alerta prioritário no Discord com evidências do binário malicioso e link do VirusTotal"""
+    if not DISCORD_WEBHOOK_URL:
+        return
+
+    sha = malware_item.get("sha256", "N/A")
+    family = malware_item.get("malware_family", "Desconhecido")
+    magic = malware_item.get("magic_type", "Desconhecido")
+    vt_pos = malware_item.get("vt_positives", 0)
+    vt_tot = malware_item.get("vt_total", 0)
+    permalink = malware_item.get("vt_permalink", f"https://www.virustotal.com/gui/file/{sha}")
+    size_kb = round(malware_item.get("file_size_bytes", 0) / 1024, 2)
+
+    c2_list = malware_item.get("extracted_ips", [])
+    c2_str = "\n".join(c2_list[:5]) if c2_list else "Nenhum IP embutido extraído"
+
+    embed = {
+        "title": "[ALERTA] Malware Interceptado e Analisado no Honeypot",
+        "color": 10038562,  # Vermelho escuro (crítico)
+        "fields": [
+            {"name": "Família Identificada", "value": f"**{family}**", "inline": True},
+            {"name": "Tipo / Arquitetura", "value": f"`{magic}`", "inline": True},
+            {"name": "Detecções VirusTotal", "value": f"**{vt_pos}/{vt_tot}** motores", "inline": True},
+            {"name": "Tamanho", "value": f"{size_kb} KB", "inline": True},
+            {"name": "SHA256", "value": f"[`{sha[:16]}...`]({permalink})", "inline": False},
+            {"name": "IoCs / C2s Detectados (Top 5)", "value": f"```text\n{c2_str}\n```", "inline": False},
+        ],
+        "footer": {"text": "Cowrie Malware Forensics Engine | AWS Serverless"},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        req = urllib.request.Request(
+            DISCORD_WEBHOOK_URL,
+            data=json.dumps({"embeds": [embed]}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "User-Agent": "Cowrie-Discord-Notifier"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            pass
+    except Exception as e:
+        print(f"[!] Falha ao enviar notificação de malware no Discord: {e}")
+
+
 def parse_cowrie_records(lines: list[str]) -> list[dict]:
     """
     Lê o log bruto JSON do Cowrie e agrega os eventos por sessão e por IP.
     """
-    # Agregação por IP atacante
     attacks = defaultdict(lambda: {
         "first_seen": None,
         "last_seen": None,
@@ -167,14 +372,12 @@ def parse_cowrie_records(lines: list[str]) -> list[dict]:
         if sid:
             rec["sessions"].add(sid)
 
-        # Atualiza limites temporais
         if ts:
             if not rec["first_seen"] or ts < rec["first_seen"]:
                 rec["first_seen"] = ts
             if not rec["last_seen"] or ts > rec["last_seen"]:
                 rec["last_seen"] = ts
 
-        # Classificação do evento
         if eid in ("cowrie.login.success", "cowrie.login.failed"):
             rec["login_attempts"] += 1
             user = evt.get("username")
@@ -197,7 +400,6 @@ def parse_cowrie_records(lines: list[str]) -> list[dict]:
             if shasum:
                 rec["downloads"].append({"sha256": shasum, "path": dest})
 
-    # Converte para formato estruturado
     results = []
     now = datetime.now(timezone.utc)
     ttl_epoch = int((now + timedelta(days=TTL_DAYS)).timestamp())
@@ -226,7 +428,6 @@ def send_discord_notification(enriched_event: dict):
     if not DISCORD_WEBHOOK_URL:
         return
 
-    # Só notifica se houve login aceito ou comandos executados
     if enriched_event["successful_logins"] == 0 and not enriched_event["commands"]:
         return
 
@@ -237,7 +438,7 @@ def send_discord_notification(enriched_event: dict):
     cmds_str = "\n".join(cmds[:5]) if cmds else "Nenhum comando digitado"
 
     embed = {
-        "title": "🚨 Honeypot Comprometido (Ataque Confirmado)",
+        "title": "[ALERTA] Honeypot Comprometido (Ataque Confirmado)",
         "color": 15158332 if score >= 80 else 16753920,
         "fields": [
             {"name": "IP Atacante", "value": f"`{ip}` ({country})", "inline": True},
@@ -262,9 +463,71 @@ def send_discord_notification(enriched_event: dict):
         print(f"[!] Falha ao enviar notificação Discord: {e}")
 
 
+def process_malware_sample(bucket: str, key: str) -> dict:
+    """
+    Processa amostra binária de malware enviada para o prefixo malware-samples/
+    Executa análise estática + VirusTotal e salva em enriched-malware/ para o Athena.
+    """
+    print(f"[+] Iniciando análise forense do malware s3://{bucket}/{key}...")
+    response = s3_client.get_object(Bucket=bucket, Key=key)
+    binary_data = response["Body"].read()
+
+    file_hash = os.path.basename(key)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # 1. Análise estática local (ELF, strings, IoCs, heurística)
+    static_info = inspect_binary_static(binary_data, file_hash)
+
+    # 2. Consulta à API pública do VirusTotal
+    vt_info = get_virustotal_report(file_hash)
+
+    # 3. Consolidação da família da ameaça (VT prevalece sobre heurística se disponível)
+    family = vt_info["malware_family"]
+    if family in ("Desconhecido (Sem API Key)", "Desconhecido") and static_info["heuristic_family"] != "Desconhecido":
+        family = static_info["heuristic_family"]
+
+    malware_item = {
+        "sha256": file_hash,
+        "md5": static_info["md5"],
+        "timestamp": now_iso,
+        "file_name": file_hash,
+        "file_size_bytes": static_info["file_size_bytes"],
+        "magic_type": static_info["magic_type"],
+        "malware_family": family,
+        "vt_positives": vt_info["vt_positives"],
+        "vt_total": vt_info["vt_total"],
+        "vt_permalink": vt_info["vt_permalink"],
+        "extracted_ips": static_info["extracted_ips"],
+        "extracted_urls": static_info["extracted_urls"],
+        "yara_tags": static_info["yara_tags"],
+    }
+
+    # 4. Grava registro JSON Lines no S3 para o Athena
+    output_key = f"{ENRICHED_MALWARE_S3_PREFIX.rstrip('/')}/enriched_malware_{file_hash}.json"
+    payload = json.dumps(malware_item, ensure_ascii=False) + "\n"
+
+    try:
+        s3_client.put_object(
+            Bucket=bucket,
+            Key=output_key,
+            Body=payload.encode("utf-8"),
+            ContentType="application/json",
+            ServerSideEncryption="AES256",
+        )
+        print(f"[OK] Telemetria de malware gravada com sucesso em s3://{bucket}/{output_key}")
+    except Exception as e:
+        print(f"[!] Erro ao gravar telemetria forense de malware no S3 ({output_key}): {e}")
+
+    # 5. Notificação imediata no Discord
+    send_discord_malware_alert(malware_item)
+
+    return malware_item
+
+
 def lambda_handler(event, context):
     """
     Handler principal acionado pelo S3 (s3:ObjectCreated:*).
+    Roteia automaticamente entre logs brutos e amostras de malware.
     """
     print(f"[+] Iniciando processamento de evento S3: {json.dumps(event)}")
 
@@ -279,9 +542,18 @@ def lambda_handler(event, context):
         if not bucket or not key:
             continue
 
-        # Trava de segurança defensiva: descarta objetos que não pertençam aos logs brutos (previne loops)
+        # Rota A: Amostra binária de malware (malware-samples/)
+        if key.startswith(MALWARE_S3_PREFIX.rstrip("/") + "/"):
+            try:
+                process_malware_sample(bucket, key)
+                total_processed += 1
+            except Exception as e:
+                print(f"[!] Falha ao processar amostra de malware ({key}): {e}")
+            continue
+
+        # Rota B: Logs de texto do Honeypot (cowrie-logs/)
         if not key.startswith("cowrie-logs/"):
-            print(f"[!] Objeto ignorado (fora do prefixo de ingestão 'cowrie-logs/'): {key}")
+            print(f"[!] Objeto ignorado (fora dos prefixos suportados): {key}")
             continue
 
         print(f"[+] Baixando arquivo s3://{bucket}/{key}...")
@@ -299,13 +571,9 @@ def lambda_handler(event, context):
         enriched_items = []
         for atk in aggregated_events:
             ip = atk["ip"]
-            # 1. Enriquecimento GeoIP
             geo = get_geoip_info(ip)
-
-            # 2. Enriquecimento AbuseIPDB
             abuse = get_abuseipdb_score(ip)
 
-            # 3. Montagem do item final estruturado para o Athena
             item = {
                 "ip_address": ip,
                 "timestamp": atk["timestamp"],
@@ -328,12 +596,9 @@ def lambda_handler(event, context):
             }
             enriched_items.append(item)
             total_processed += 1
-            # Notifica Discord em caso de logins/malware
             send_discord_notification(item)
 
-        # 4. Grava o lote enriquecido em JSON Lines no S3 para o Athena
         if enriched_items:
-            # Mantém formato compatível com o OpenX JsonSerDe (um objeto JSON por linha)
             jsonl_payload = "\n".join(json.dumps(it, ensure_ascii=False) for it in enriched_items) + "\n"
             base_filename = os.path.basename(key)
             output_key = f"{ENRICHED_S3_PREFIX.rstrip('/')}/enriched_{base_filename}"

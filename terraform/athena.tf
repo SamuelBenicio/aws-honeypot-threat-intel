@@ -157,3 +157,97 @@ resource "aws_glue_catalog_table" "enriched_attacks" {
     }
   }
 }
+
+# 4. Tabela Externa no Glue Catalog para Análise Forense de Malwares
+resource "aws_glue_catalog_table" "enriched_malware" {
+  database_name = aws_glue_catalog_database.athena_db.name
+  name          = "enriched_malware"
+  table_type    = "EXTERNAL_TABLE"
+
+  parameters = {
+    EXTERNAL         = "TRUE"
+    "classification" = "json"
+  }
+
+  storage_descriptor {
+    location      = "s3://${aws_s3_bucket.honeypot_logs.id}/enriched-malware/"
+    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
+    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
+
+    ser_de_info {
+      name                  = "json-serde"
+      serialization_library = "org.openx.data.jsonserde.JsonSerDe"
+      parameters = {
+        "ignore.malformed.json" = "TRUE"
+        "dots.in.keys"          = "FALSE"
+        "case.insensitive"      = "TRUE"
+      }
+    }
+
+    columns {
+      name = "sha256"
+      type = "string"
+    }
+
+    columns {
+      name = "md5"
+      type = "string"
+    }
+
+    columns {
+      name = "timestamp"
+      type = "string"
+    }
+
+    columns {
+      name = "file_name"
+      type = "string"
+    }
+
+    columns {
+      name = "file_size_bytes"
+      type = "bigint"
+    }
+
+    columns {
+      name = "magic_type"
+      type = "string"
+    }
+
+    columns {
+      name = "malware_family"
+      type = "string"
+    }
+
+    columns {
+      name = "vt_positives"
+      type = "int"
+    }
+
+    columns {
+      name = "vt_total"
+      type = "int"
+    }
+
+    columns {
+      name = "vt_permalink"
+      type = "string"
+    }
+
+    columns {
+      name = "extracted_ips"
+      type = "array<string>"
+    }
+
+    columns {
+      name = "extracted_urls"
+      type = "array<string>"
+    }
+
+    columns {
+      name = "yara_tags"
+      type = "array<string>"
+    }
+  }
+}
+

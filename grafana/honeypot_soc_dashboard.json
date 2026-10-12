@@ -480,6 +480,234 @@
       ],
       "title": "Histórico de Comandos Executados",
       "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "id": 104,
+      "title": "Análise Forense de Malware e Botnets",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "bg0n3v8edi8e8e"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 37
+      },
+      "id": 9,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "connectionArgs": {
+            "catalog": "AwsDataCatalog",
+            "database": "cowrie_threat_intel",
+            "workgroup": "cowrie_analytics"
+          },
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "bg0n3v8edi8e8e"
+          },
+          "format": 1,
+          "rawSQL": "SELECT count(*) as total_malwares FROM enriched_malware;",
+          "refId": "A"
+        }
+      ],
+      "title": "Amostras de Malware Interceptadas",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "bg0n3v8edi8e8e"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 37
+      },
+      "id": 10,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "connectionArgs": {
+            "catalog": "AwsDataCatalog",
+            "database": "cowrie_threat_intel",
+            "workgroup": "cowrie_analytics"
+          },
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "bg0n3v8edi8e8e"
+          },
+          "format": 1,
+          "rawSQL": "SELECT coalesce(avg(vt_positives), 0) as media_deteccoes FROM enriched_malware;",
+          "refId": "A"
+        }
+      ],
+      "title": "Média de Detecções VirusTotal",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "bg0n3v8edi8e8e"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 37
+      },
+      "id": 11,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "right"
+        },
+        "pieType": "donut",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "connectionArgs": {
+            "catalog": "AwsDataCatalog",
+            "database": "cowrie_threat_intel",
+            "workgroup": "cowrie_analytics"
+          },
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "bg0n3v8edi8e8e"
+          },
+          "format": 1,
+          "rawSQL": "SELECT malware_family as familia, count(*) as total FROM enriched_malware GROUP BY malware_family ORDER BY total DESC;",
+          "refId": "A"
+        }
+      ],
+      "title": "Famílias de Malware Identificadas",
+      "type": "piechart"
+    },
+    {
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "bg0n3v8edi8e8e"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 41
+      },
+      "id": 12,
+      "options": {
+        "orientation": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "connectionArgs": {
+            "catalog": "AwsDataCatalog",
+            "database": "cowrie_threat_intel",
+            "workgroup": "cowrie_analytics"
+          },
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "bg0n3v8edi8e8e"
+          },
+          "format": 1,
+          "rawSQL": "SELECT magic_type as arquitetura, count(*) as total FROM enriched_malware GROUP BY magic_type ORDER BY total DESC;",
+          "refId": "A"
+        }
+      ],
+      "title": "Arquiteturas e Tipos de Binários Interceptados",
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "bg0n3v8edi8e8e"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
+      "id": 13,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": true,
+          "enablePagination": true
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "connectionArgs": {
+            "catalog": "AwsDataCatalog",
+            "database": "cowrie_threat_intel",
+            "workgroup": "cowrie_analytics"
+          },
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "bg0n3v8edi8e8e"
+          },
+          "format": 1,
+          "rawSQL": "SELECT timestamp as horario, sha256, magic_type as tipo, malware_family as familia, concat(cast(vt_positives as varchar), '/', cast(vt_total as varchar)) as virustotal, array_join(extracted_ips, ', ') as c2_ips, vt_permalink as link_vt FROM enriched_malware ORDER BY timestamp DESC;",
+          "refId": "A"
+        }
+      ],
+      "title": "Registro Forense de Malwares e IoCs Extraídos",
+      "type": "table"
     }
   ],
   "refresh": "1h",

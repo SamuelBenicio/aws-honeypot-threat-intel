@@ -90,3 +90,11 @@ variable "athena_results_retention_days" {
   default     = 7
 }
 
+variable "virustotal_api_key" {
+  description = "Chave de API pública gratuita do VirusTotal para enriquecimento de malwares (opcional)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+

@@ -88,5 +88,42 @@ resource "aws_s3_bucket_lifecycle_configuration" "honeypot_logs_lifecycle" {
       days_after_initiation = 2
     }
   }
+
+  # 4. Retenção de binários e scripts maliciosos reais (malware-samples/)
+  rule {
+    id     = "expire-malware-samples"
+    status = "Enabled"
+
+    filter {
+      prefix = "malware-samples/"
+    }
+
+    expiration {
+      days = var.raw_logs_retention_days
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 2
+    }
+  }
+
+  # 5. Retenção da telemetria forense enriquecida de malwares (enriched-malware/)
+  rule {
+    id     = "expire-enriched-malware"
+    status = "Enabled"
+
+    filter {
+      prefix = "enriched-malware/"
+    }
+
+    expiration {
+      days = var.enriched_logs_retention_days
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 2
+    }
+  }
 }
+
 
