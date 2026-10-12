@@ -91,6 +91,7 @@ resource "aws_lambda_function" "threat_intel_processor" {
       ENRICHED_S3_PREFIX  = "enriched-telemetry/"
       ABUSEIPDB_API_KEY   = var.abuseipdb_api_key
       DISCORD_WEBHOOK_URL = var.discord_webhook_url
+      TTL_DAYS            = tostring(var.enriched_logs_retention_days)
     }
   }
 

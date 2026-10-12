@@ -29,12 +29,13 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "honeypot_logs_enc
   }
 }
 
-# Regra de Ciclo de Vida: expiração após 30 dias para não gerar custos de armazenamento
+# Regras de Ciclo de Vida: Gestão de Retenção, Proteção de FinOps e Limpeza de Temporários
 resource "aws_s3_bucket_lifecycle_configuration" "honeypot_logs_lifecycle" {
   bucket = aws_s3_bucket.honeypot_logs.id
 
+  # 1. Retenção de logs brutos do Honeypot (cowrie-logs/)
   rule {
-    id     = "expire-logs-30-days"
+    id     = "expire-raw-logs"
     status = "Enabled"
 
     filter {
@@ -42,7 +43,45 @@ resource "aws_s3_bucket_lifecycle_configuration" "honeypot_logs_lifecycle" {
     }
 
     expiration {
-      days = 30
+      days = var.raw_logs_retention_days
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 2
+    }
+  }
+
+  # 2. Retenção de telemetria analítica enriquecida (enriched-telemetry/)
+  # Previne que o volume acumulado ultrapasse a trava de 100 MB do Athena
+  rule {
+    id     = "expire-enriched-telemetry"
+    status = "Enabled"
+
+    filter {
+      prefix = "enriched-telemetry/"
+    }
+
+    expiration {
+      days = var.enriched_logs_retention_days
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 2
+    }
+  }
+
+  # 3. Purga de resultados temporários de consultas do Athena (athena-query-results/)
+  # Evita acúmulo de dezenas de milhares de arquivos CSV órfãos gerados pelo Grafana
+  rule {
+    id     = "expire-athena-query-results"
+    status = "Enabled"
+
+    filter {
+      prefix = "athena-query-results/"
+    }
+
+    expiration {
+      days = var.athena_results_retention_days
     }
 
     abort_incomplete_multipart_upload {
@@ -50,3 +89,4 @@ resource "aws_s3_bucket_lifecycle_configuration" "honeypot_logs_lifecycle" {
     }
   }
 }
+

@@ -74,12 +74,17 @@ class TestTerraformSecuritySpecs(unittest.TestCase):
         self.assertIn("restrict_public_buckets = true", content)
 
     def test_s3_bucket_lifecycle_rules(self):
-        """Garante que regras de ciclo de vida existem para prevenir custos no AWS Free Tier."""
+        """Garante que regras de ciclo de vida existem para prevenir custos no AWS Free Tier e travas de FinOps."""
         content = self.s3_file.read_text(encoding="utf-8")
 
         self.assertIn("aws_s3_bucket_lifecycle_configuration", content)
-        self.assertIn("expiration", content)
-        self.assertIn("days = 30", content, "Os logs devem expirar em 30 dias para respeitar o limite de 5 GB do S3")
+        self.assertIn("expire-raw-logs", content)
+        self.assertIn("var.raw_logs_retention_days", content)
+        self.assertIn("expire-enriched-telemetry", content)
+        self.assertIn("var.enriched_logs_retention_days", content)
+        self.assertIn("expire-athena-query-results", content)
+        self.assertIn("var.athena_results_retention_days", content)
+        self.assertIn("abort_incomplete_multipart_upload", content)
 
     def test_ec2_root_volume_encrypted(self):
         """Garante que o volume EBS da instância EC2 é provisionado com criptografia em repouso ativada."""

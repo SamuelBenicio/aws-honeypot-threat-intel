@@ -71,3 +71,22 @@ variable "discord_webhook_url" {
   default     = ""
   sensitive   = true
 }
+
+variable "raw_logs_retention_days" {
+  description = "Número de dias para retenção dos logs brutos no S3 (cowrie-logs/)"
+  type        = number
+  default     = 60
+}
+
+variable "enriched_logs_retention_days" {
+  description = "Número de dias para retenção da telemetria enriquecida no S3 (enriched-telemetry/)"
+  type        = number
+  default     = 60
+}
+
+variable "athena_results_retention_days" {
+  description = "Número de dias para expiração das saídas temporárias de queries do Athena (athena-query-results/)"
+  type        = number
+  default     = 7
+}
+
