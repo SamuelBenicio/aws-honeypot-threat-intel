@@ -241,8 +241,8 @@ def inspect_binary_static(binary_data: bytes, sha256_hash: str) -> dict:
     elif binary_data.startswith(b"#!/") or b"bin/sh" in binary_data[:128] or b"bin/bash" in binary_data[:128]:
         magic_type = "Linux Shell Script"
 
-    # 2. Extração de strings imprimíveis (ASCII >= 4 caracteres)
-    raw_strings = re.findall(rb"[\x20-\x7e]{4,}", binary_data)
+    # 2. Extração de strings imprimíveis (ASCII >= 4 caracteres, limitado a 2 MB para proteção de RAM)
+    raw_strings = re.findall(rb"[\x20-\x7e]{4,}", binary_data[:2097152])
     decoded_strings = [s.decode("utf-8", errors="ignore") for s in raw_strings]
     full_text = " ".join(decoded_strings).lower()
 

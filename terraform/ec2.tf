@@ -165,6 +165,10 @@ resource "aws_instance" "honeypot_host" {
 
               touch "\$SYNCED_LIST" "\$STATE_FILE"
 
+              # Normaliza permissoes entre container Cowrie (UID 999) e host (UID 1000)
+              sudo chown -R 999:999 "\$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
+              sudo chmod -R a+rwX "\$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
+
               # 2. Limpeza atomica de arquivos temporarios via trap
               TEMP_CHUNK=""
               cleanup() {
@@ -218,43 +222,41 @@ resource "aws_instance" "honeypot_host" {
               done
 
               # 6. Trata o arquivo de log ativo em tempo real
-              if [ ! -f "$LOG_FILE" ]; then
-                  exit 0
-              fi
+              if [ -f "$LOG_FILE" ]; then
+                  DATE_PATH=$(date -u +"year=%Y/month=%m/day=%d")
+                  TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
+                  TEMP_CHUNK="/tmp/cowrie_chunk_$TIMESTAMP.json"
 
-              DATE_PATH=$(date -u +"year=%Y/month=%m/day=%d")
-              TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
-              TEMP_CHUNK="/tmp/cowrie_chunk_$TIMESTAMP.json"
-
-              LAST_POS=0
-              if [ -f "$STATE_FILE" ]; then
-                  LAST_POS=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
-              fi
-
-              TOTAL_LINES=$(wc -l < "$LOG_FILE")
-
-              if [ "$TOTAL_LINES" -lt "$LAST_POS" ]; then
                   LAST_POS=0
-              fi
-
-              if [ "$TOTAL_LINES" -gt "$LAST_POS" ]; then
-                  TAIL_COUNT=$((TOTAL_LINES - LAST_POS))
-                  tail -n "$TAIL_COUNT" "$LOG_FILE" > "$TEMP_CHUNK"
-
-                  # Valida integridade da ultima linha (prevencao contra JSON incompleto / corte concorrente)
-                  LAST_CHAR=$(tail -c 2 "$TEMP_CHUNK" 2>/dev/null | tr -d '\n\r' || true)
-                  EFFECTIVE_LINES="$TOTAL_LINES"
-                  if [ "$LAST_CHAR" != "}" ] && [ "$TAIL_COUNT" -gt 1 ]; then
-                      head -n -1 "$TEMP_CHUNK" > "$TEMP_CHUNK.clean"
-                      mv "$TEMP_CHUNK.clean" "$TEMP_CHUNK"
-                      EFFECTIVE_LINES=$((TOTAL_LINES - 1))
+                  if [ -f "$STATE_FILE" ]; then
+                      LAST_POS=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
                   fi
 
-                  TARGET_S3="s3://$BUCKET_NAME/cowrie-logs/$DATE_PATH/cowrie_$TIMESTAMP.json"
-                  if upload_with_retry "$TEMP_CHUNK" "$TARGET_S3"; then
-                      echo "$EFFECTIVE_LINES" > "$STATE_FILE"
+                  TOTAL_LINES=$(wc -l < "$LOG_FILE")
+
+                  if [ "$TOTAL_LINES" -lt "$LAST_POS" ]; then
+                      LAST_POS=0
                   fi
-                  rm -f "$TEMP_CHUNK"
+
+                  if [ "$TOTAL_LINES" -gt "$LAST_POS" ]; then
+                      TAIL_COUNT=$((TOTAL_LINES - LAST_POS))
+                      tail -n "$TAIL_COUNT" "$LOG_FILE" > "$TEMP_CHUNK"
+
+                      # Valida integridade da ultima linha (prevencao contra JSON incompleto / corte concorrente)
+                      LAST_CHAR=$(tail -c 2 "$TEMP_CHUNK" 2>/dev/null | tr -d '\n\r' || true)
+                      EFFECTIVE_LINES="$TOTAL_LINES"
+                      if [ "$LAST_CHAR" != "}" ] && [ "$TAIL_COUNT" -gt 1 ]; then
+                          head -n -1 "$TEMP_CHUNK" > "$TEMP_CHUNK.clean"
+                          mv "$TEMP_CHUNK.clean" "$TEMP_CHUNK"
+                          EFFECTIVE_LINES=$((TOTAL_LINES - 1))
+                      fi
+
+                      TARGET_S3="s3://$BUCKET_NAME/cowrie-logs/$DATE_PATH/cowrie_$TIMESTAMP.json"
+                      if upload_with_retry "$TEMP_CHUNK" "$TARGET_S3"; then
+                          echo "$EFFECTIVE_LINES" > "$STATE_FILE"
+                      fi
+                      rm -f "$TEMP_CHUNK"
+                  fi
               fi
 
               # 7. Sincronizacao de binarios e scripts maliciosos reais (malware-samples/)
@@ -266,12 +268,16 @@ resource "aws_instance" "honeypot_host" {
                   for sample in "$MALWARE_DIR"/*; do
                       if [ -f "$sample" ]; then
                           sample_hash=$(basename "$sample")
-                          if [ $${#sample_hash} -eq 64 ] && ! grep -qxF "$sample_hash" "$SYNCED_MALWARE_LIST"; then
-                              TARGET_S3="s3://$BUCKET_NAME/malware-samples/$sample_hash"
-                              if upload_with_retry "$sample" "$TARGET_S3"; then
-                                  echo "$sample_hash" >> "$SYNCED_MALWARE_LIST"
+                          if [ $${#sample_hash} -eq 64 ]; then
+                              if grep -qxF "$sample_hash" "$SYNCED_MALWARE_LIST"; then
                                   rm -f "$sample"
-                                  echo "[+] Malware enviado ao S3 e removido do disco local: $sample_hash"
+                              else
+                                  TARGET_S3="s3://$BUCKET_NAME/malware-samples/$sample_hash"
+                                  if upload_with_retry "$sample" "$TARGET_S3"; then
+                                      echo "$sample_hash" >> "$SYNCED_MALWARE_LIST"
+                                      rm -f "$sample"
+                                      echo "[+] Malware enviado ao S3 e removido do disco local: $sample_hash"
+                                  fi
                               fi
                           fi
                       fi
@@ -281,7 +287,8 @@ resource "aws_instance" "honeypot_host" {
 
               chmod +x "$COWRIE_DIR/sync_logs_to_s3.sh"
               chown -R ubuntu:ubuntu "$COWRIE_DIR"
-              chmod -R 777 "$COWRIE_DIR/var"
+              chown -R 999:999 "$COWRIE_DIR/var"
+              chmod -R a+rwX "$COWRIE_DIR/var"
 
               # Iniciar o Cowrie via Docker Compose
               cd "$COWRIE_DIR"
