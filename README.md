@@ -158,7 +158,7 @@ A arquitetura opera integralmente dentro do AWS Free Tier, mantendo custos abaix
 
 ## 6. Cobertura de Testes Automatizados
 
-O projeto mantem uma suite de testes unitarios, de regressao e de integracao com **119 testes automatizados aprovados** e **98% de cobertura global de codigo** (100% no motor principal do Lambda):
+O projeto mantem uma suite de testes unitarios, de regressao e de integracao com **122 testes automatizados aprovados** e **98% de cobertura global de codigo** (100% no motor principal do Lambda):
 
 ```bash
 pytest --cov=lambda --cov=scripts -v
@@ -170,13 +170,13 @@ pytest --cov=lambda --cov=scripts -v
 | :--- | :---: | :---: | :---: |
 | `lambda/handler.py` | 333 | 0 | **100%** |
 | `scripts/analyze_2days.py` | 89 | 1 | **99%** |
-| `scripts/check_pipeline_health.py` | 86 | 1 | **99%** |
 | `scripts/generate_threat_report.py` | 72 | 1 | **99%** |
+| `scripts/check_pipeline_health.py` | 123 | 3 | **98%** |
 | `scripts/simulate_adversary.py` | 43 | 1 | **98%** |
 | `scripts/test_lambda_local.py` | 36 | 1 | **97%** |
 | `scripts/backfill_enrichment.py` | 68 | 3 | **96%** |
 | `scripts/parse_logs.py` | 106 | 8 | **92%** |
-| **TOTAL CONSOLIDADO** | **833** | **16** | **98%** |
+| **TOTAL CONSOLIDADO** | **870** | **18** | **98%** |
 
 ### Escopo das Suites de Teste:
 * `tests/test_unit_malware_pipeline.py`: Validacao de headers ELF/PE/Script, assinaturas de botnets Mirai/Gafgyt, mineracao de IoCs/C2, VirusTotal v3 e tratamento de Zero-Days.
@@ -223,7 +223,7 @@ aws-honeypot-threat-intel/
 │   ├── parse_logs.py            # Conversor de telemetria bruta para formatos legiveis
 │   ├── simulate_adversary.py    # Emulador de adversario automatizado para testes
 │   └── test_lambda_local.py     # Script de execucao e validacao local da Lambda
-└── tests/                       # Suite de testes automatizados (119 testes - 98% cobertura)
+└── tests/                       # Suite de testes automatizados (122 testes - 98% cobertura)
     ├── test_unit_malware_pipeline.py
     ├── test_sync_rotation_logic.py
     ├── test_system_integrity_regression.py
@@ -259,10 +259,17 @@ O Grafana Cloud permite disponibilizar o painel publicamente em modo somente lei
 
 Para garantir a confiabilidade operacional e a continuidade da ingestao de telemetria sem intervencoes manuais, o repositorio disponibiliza ferramentas e procedimentos formais de sustentacao:
 
-* **Runbook Operacional de SRE e Troubleshooting:** O documento [`docs/runbooks/pipeline_operations_runbook.md`](docs/runbooks/pipeline_operations_runbook.md) detalha a arquitetura de sincronizacao, diagnostico preventivo e resolucao de incidentes (reinicio de containers, recuperacao de dessincronizacao e limites de retencao).
+* **Runbook Operacional de SRE e Troubleshooting:** O documento [`docs/runbooks/pipeline_operations_runbook.md`](docs/runbooks/pipeline_operations_runbook.md) detalha a arquitetura de sincronizacao, diagnostico preventivo, comandos de conexao via AWS SSM Session Manager (`aws ssm start-session --target <instance_id>`) e resolucao de incidentes.
 * **Utilitario CLI de Verificacao de Saude:** O script [`scripts/check_pipeline_health.py`](scripts/check_pipeline_health.py) executa a inspecao automatizada das cinco camadas do ecossistema AWS (credenciais STS, bucket S3, configuracoes da AWS Lambda, trava FinOps do Amazon Athena e status do container/cursor via AWS SSM):
 
 ```bash
+# Execucao padrao
 python scripts/check_pipeline_health.py
+
+# Sobrescrita dinamica de parametros via CLI ou variaveis de ambiente
+python scripts/check_pipeline_health.py --instance-id i-0cbc1920d1c90e101 --bucket cowrie-threat-intel-logs-9628d6d2 --region us-east-1
 ```
+
+O utilitario opera com exit code semantico (`0` para sucesso integral de todas as camadas e `1` em caso de degradacao ou falha), permitindo integracao direta em esteiras de CI/CD e cron jobs de monitoramento.
+
 

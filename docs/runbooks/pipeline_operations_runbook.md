@@ -44,6 +44,14 @@ Para inspecionar a integridade de todas as camadas simultaneamente, execute o ut
 python scripts/check_pipeline_health.py
 ```
 
+O utilitario aceita argumentos de linha de comando ou variaveis de ambiente para ambientes dinâmicos de CI/CD:
+
+```bash
+python scripts/check_pipeline_health.py --instance-id i-0cbc1920d1c90e101 --bucket cowrie-threat-intel-logs-9628d6d2 --region us-east-1
+```
+
+O script retorna exit code semantico (`0` para sucesso integral e `1` em caso de degradacao de qualquer camada), permitindo integracao direta em pipes de monitoramento.
+
 ### O que o script valida:
 * **Conectividade e Autenticacao IAM:** Valida as credenciais ativas via AWS STS.
 * **Acessibilidade do Bucket S3:** Confirma se o bucket existe e se contem arquivos recentes em `cowrie-logs/` e `enriched-telemetry/`.
@@ -62,17 +70,21 @@ python scripts/check_pipeline_health.py
 * **Causa Raiz 1:** Container parado ou motor `jsonlog` desativado por conflito de permissoes.
 * **Causa Raiz 2:** Cursor de sincronizacao preso em arquivo rotacionado.
 * **Procedimento de Recuperacao:**
-  1. Conecte via AWS SSM e verifique os logs do container:
+  1. Conecte a instancia via AWS Systems Manager Session Manager:
+     ```bash
+     aws ssm start-session --target i-0cbc1920d1c90e101
+     ```
+  2. Verifique os logs do container Cowrie:
      ```bash
      docker logs --tail 30 cowrie-honeypot
      ```
-  2. Caso haja a mensagem `Failed to load output engine: jsonlog`, o watchdog corrigira automaticamente em ate 5 minutos. Para recuperacao manual imediata:
+  3. Caso haja a mensagem `Failed to load output engine: jsonlog`, o watchdog corrigira automaticamente em ate 5 minutos. Para recuperacao manual imediata:
      ```bash
      sudo chown -R 999:999 /home/ubuntu/cowrie/var
      sudo chmod -R a+rwX /home/ubuntu/cowrie/var
      docker restart cowrie-honeypot
      ```
-  3. Force a execucao do sincronizador e confira a saida:
+  4. Force a execucao do sincronizador e confira a saida:
      ```bash
      su - ubuntu -c "/home/ubuntu/cowrie/sync_logs_to_s3.sh"
      ```

@@ -452,6 +452,7 @@ class TestUnitScripts(unittest.TestCase):
         }
         mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-12345"}}
         mock_ssm.get_command_invocation.return_value = {
+            "Status": "Success",
             "StandardOutputContent": "Running=true\nSTATE_POS=161\nINODE=12345\nTOTAL_LINES=161\n"
         }
 
@@ -582,7 +583,111 @@ class TestUnitScripts(unittest.TestCase):
         self.assertTrue(results["sts"])
         self.assertFalse(results["ec2"])
 
+    def test_parse_args(self):
+        """Valida parsing de argumentos CLI com valores padrao e customizados."""
+        import scripts.check_pipeline_health as cph
+
+        args_default = cph.parse_args([])
+        self.assertEqual(args_default.region, cph.DEFAULT_REGION)
+        self.assertEqual(args_default.instance_id, cph.DEFAULT_INSTANCE_ID)
+        self.assertEqual(args_default.bucket, cph.DEFAULT_BUCKET_NAME)
+
+        args_custom = cph.parse_args([
+            "--region", "sa-east-1",
+            "--instance-id", "i-custom123",
+            "--bucket", "custom-bucket",
+            "--lambda-name", "custom-lambda",
+            "--workgroup", "custom-wg",
+            "--database", "custom-db",
+            "--ssm-wait-secs", "1",
+            "--ssm-max-attempts", "2",
+        ])
+        self.assertEqual(args_custom.region, "sa-east-1")
+        self.assertEqual(args_custom.instance_id, "i-custom123")
+        self.assertEqual(args_custom.bucket, "custom-bucket")
+        self.assertEqual(args_custom.lambda_name, "custom-lambda")
+        self.assertEqual(args_custom.workgroup, "custom-wg")
+        self.assertEqual(args_custom.database, "custom-db")
+        self.assertEqual(args_custom.ssm_wait_secs, 1)
+        self.assertEqual(args_custom.ssm_max_attempts, 2)
+
+    @patch("scripts.check_pipeline_health.check_pipeline_health")
+    def test_main_exit_codes(self, mock_check):
+        """Valida que main() retorna 0 para sucesso integral e 1 para falhas."""
+        import scripts.check_pipeline_health as cph
+
+        mock_check.return_value = {
+            "sts": True, "s3": True, "lambda": True, "athena": True, "ec2": True, "ssm": True
+        }
+        self.assertEqual(cph.main([]), 0)
+
+        mock_check.return_value = {"sts": True, "s3": False}
+        self.assertEqual(cph.main([]), 1)
+
+        mock_check.return_value = {}
+        self.assertEqual(cph.main([]), 1)
+
+    @patch("scripts.check_pipeline_health.time.sleep", return_value=None)
+    @patch("scripts.check_pipeline_health.boto3.client")
+    def test_check_pipeline_health_ssm_polling_states(self, mock_boto_client, mock_sleep):
+        """Valida o polling resiliente do SSM lidando com InProgress->Success, Failed e Timeout."""
+        import scripts.check_pipeline_health as cph
+
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.return_value = {
+            "Account": "070443470233", "Arn": "arn:aws:iam::070443470233:user/admin"
+        }
+        mock_s3 = MagicMock()
+        mock_lambda = MagicMock()
+        mock_athena = MagicMock()
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_instances.return_value = {
+            "Reservations": [{"Instances": [{"State": {"Name": "running"}, "PublicIpAddress": "1.2.3.4"}]}]
+        }
+
+        # 1. Caso com InProgress transicionando para Success
+        mock_ssm = MagicMock()
+        mock_ssm.describe_instance_information.return_value = {"InstanceInformationList": [{"PingStatus": "Online"}]}
+        mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-1"}}
+        mock_ssm.get_command_invocation.side_effect = [
+            {"Status": "InProgress"},
+            {"Status": "Success", "StandardOutputContent": "Running=true"}
+        ]
+
+        def client_dispatcher(service_name, **kwargs):
+            if service_name == "sts":
+                return mock_sts
+            if service_name == "s3":
+                return mock_s3
+            if service_name == "lambda":
+                return mock_lambda
+            if service_name == "athena":
+                return mock_athena
+            if service_name == "ec2":
+                return mock_ec2
+            if service_name == "ssm":
+                return mock_ssm
+            return MagicMock()
+
+        mock_boto_client.side_effect = client_dispatcher
+        res = cph.check_pipeline_health(ssm_wait_secs=0, ssm_max_attempts=3)
+        self.assertTrue(res["ssm"])
+
+        # 2. Caso com Failed retornado pelo SSM
+        mock_ssm.get_command_invocation.side_effect = None
+        mock_ssm.get_command_invocation.return_value = {
+            "Status": "Failed", "StandardErrorContent": "Command failed"
+        }
+        res_fail = cph.check_pipeline_health(ssm_wait_secs=0, ssm_max_attempts=1)
+        self.assertFalse(res_fail["ssm"])
+
+        # 3. Caso onde get_command_invocation lanca excecao persistente
+        mock_ssm.get_command_invocation.side_effect = RuntimeError("InvocationDoesNotExist")
+        res_err = cph.check_pipeline_health(ssm_wait_secs=0, ssm_max_attempts=1)
+        self.assertFalse(res_err["ec2"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
