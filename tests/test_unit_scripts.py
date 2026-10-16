@@ -414,6 +414,174 @@ class TestUnitScripts(unittest.TestCase):
         with patch.object(tll.Path, "glob", return_value=[]):
             tll.test_local_enrichment()
 
+    # -------------------------------------------------------------------------
+    # Testes do check_pipeline_health.py
+    # -------------------------------------------------------------------------
+    @patch("scripts.check_pipeline_health.time.sleep", return_value=None)
+    @patch("scripts.check_pipeline_health.boto3.client")
+    def test_check_pipeline_health_full_success(self, mock_boto_client, mock_sleep):
+        """Valida fluxo completo de sucesso de check_pipeline_health em todas as camadas."""
+        import scripts.check_pipeline_health as cph
+
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.return_value = {
+            "Account": "070443470233", "Arn": "arn:aws:iam::070443470233:user/admin"
+        }
+
+        mock_s3 = MagicMock()
+        mock_s3.list_objects_v2.side_effect = [{"KeyCount": 10}, {"KeyCount": 5}]
+
+        mock_lambda = MagicMock()
+        mock_lambda.get_function.return_value = {
+            "Configuration": {"Runtime": "python3.12", "MemorySize": 128, "Timeout": 120}
+        }
+
+        mock_athena = MagicMock()
+        mock_athena.get_work_group.return_value = {
+            "WorkGroup": {"State": "ENABLED", "Configuration": {"BytesScannedCutoffPerQuery": 104857600}}
+        }
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_instances.return_value = {
+            "Reservations": [{"Instances": [{"State": {"Name": "running"}, "PublicIpAddress": "54.210.1.2"}]}]
+        }
+
+        mock_ssm = MagicMock()
+        mock_ssm.describe_instance_information.return_value = {
+            "InstanceInformationList": [{"PingStatus": "Online"}]
+        }
+        mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-12345"}}
+        mock_ssm.get_command_invocation.return_value = {
+            "StandardOutputContent": "Running=true\nSTATE_POS=161\nINODE=12345\nTOTAL_LINES=161\n"
+        }
+
+        def client_dispatcher(service_name, **kwargs):
+            if service_name == "sts":
+                return mock_sts
+            elif service_name == "s3":
+                return mock_s3
+            elif service_name == "lambda":
+                return mock_lambda
+            elif service_name == "athena":
+                return mock_athena
+            elif service_name == "ec2":
+                return mock_ec2
+            elif service_name == "ssm":
+                return mock_ssm
+            return MagicMock()
+
+        mock_boto_client.side_effect = client_dispatcher
+
+        results = cph.check_pipeline_health(ssm_wait_secs=0)
+        self.assertTrue(results["sts"])
+        self.assertTrue(results["s3"])
+        self.assertTrue(results["lambda"])
+        self.assertTrue(results["athena"])
+        self.assertTrue(results["ec2"])
+        self.assertTrue(results["ssm"])
+
+    @patch("scripts.check_pipeline_health.boto3.client")
+    def test_check_pipeline_health_sts_failure(self, mock_boto_client):
+        """Valida que falha em credenciais STS aborta imediatamente o diagnostico."""
+        import scripts.check_pipeline_health as cph
+
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.side_effect = RuntimeError("Invalid credentials")
+        mock_boto_client.return_value = mock_sts
+
+        results = cph.check_pipeline_health(ssm_wait_secs=0)
+        self.assertFalse(results["sts"])
+        self.assertNotIn("s3", results)
+
+    @patch("scripts.check_pipeline_health.time.sleep", return_value=None)
+    @patch("scripts.check_pipeline_health.boto3.client")
+    def test_check_pipeline_health_partial_failures(self, mock_boto_client, mock_sleep):
+        """Valida tratamento gracioso de falhas nas camadas S3, Lambda, Athena e SSM desanexado."""
+        import scripts.check_pipeline_health as cph
+
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.return_value = {
+            "Account": "070443470233", "Arn": "arn:aws:iam::070443470233:user/admin"
+        }
+
+        mock_s3 = MagicMock()
+        mock_s3.head_bucket.side_effect = RuntimeError("S3 Access Denied")
+
+        mock_lambda = MagicMock()
+        mock_lambda.get_function.side_effect = RuntimeError("ResourceNotFoundException")
+
+        mock_athena = MagicMock()
+        mock_athena.get_work_group.side_effect = RuntimeError("WorkGroup not found")
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_instances.return_value = {
+            "Reservations": [{"Instances": [{"State": {"Name": "stopped"}}]}]
+        }
+
+        mock_ssm = MagicMock()
+        mock_ssm.describe_instance_information.return_value = {"InstanceInformationList": []}
+
+        def client_dispatcher(service_name, **kwargs):
+            if service_name == "sts":
+                return mock_sts
+            elif service_name == "s3":
+                return mock_s3
+            elif service_name == "lambda":
+                return mock_lambda
+            elif service_name == "athena":
+                return mock_athena
+            elif service_name == "ec2":
+                return mock_ec2
+            elif service_name == "ssm":
+                return mock_ssm
+            return MagicMock()
+
+        mock_boto_client.side_effect = client_dispatcher
+
+        results = cph.check_pipeline_health(ssm_wait_secs=0)
+        self.assertTrue(results["sts"])
+        self.assertFalse(results["s3"])
+        self.assertFalse(results["lambda"])
+        self.assertFalse(results["athena"])
+        self.assertTrue(results["ec2"])
+        self.assertFalse(results["ssm"])
+
+    @patch("scripts.check_pipeline_health.boto3.client")
+    def test_check_pipeline_health_ec2_exception(self, mock_boto_client):
+        """Valida tratamento de excecao geral na camada EC2/SSM."""
+        import scripts.check_pipeline_health as cph
+
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.return_value = {
+            "Account": "070443470233", "Arn": "arn:aws:iam::070443470233:user/admin"
+        }
+
+        mock_s3 = MagicMock()
+        mock_lambda = MagicMock()
+        mock_athena = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_instances.side_effect = RuntimeError("EC2 network error")
+
+        def client_dispatcher(service_name, **kwargs):
+            if service_name == "sts":
+                return mock_sts
+            elif service_name == "s3":
+                return mock_s3
+            elif service_name == "lambda":
+                return mock_lambda
+            elif service_name == "athena":
+                return mock_athena
+            elif service_name == "ec2":
+                return mock_ec2
+            return MagicMock()
+
+        mock_boto_client.side_effect = client_dispatcher
+
+        results = cph.check_pipeline_health(ssm_wait_secs=0)
+        self.assertTrue(results["sts"])
+        self.assertFalse(results["ec2"])
+
 
 if __name__ == "__main__":
     unittest.main()

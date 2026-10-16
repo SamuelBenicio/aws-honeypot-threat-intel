@@ -158,7 +158,7 @@ A arquitetura opera integralmente dentro do AWS Free Tier, mantendo custos abaix
 
 ## 6. Cobertura de Testes Automatizados
 
-O projeto mantem uma suite de testes unitarios, de regressao e de integracao com **115 testes automatizados aprovados** e **98% de cobertura global de codigo** (100% no motor principal do Lambda):
+O projeto mantem uma suite de testes unitarios, de regressao e de integracao com **119 testes automatizados aprovados** e **98% de cobertura global de codigo** (100% no motor principal do Lambda):
 
 ```bash
 pytest --cov=lambda --cov=scripts -v
@@ -170,18 +170,19 @@ pytest --cov=lambda --cov=scripts -v
 | :--- | :---: | :---: | :---: |
 | `lambda/handler.py` | 333 | 0 | **100%** |
 | `scripts/analyze_2days.py` | 89 | 1 | **99%** |
+| `scripts/check_pipeline_health.py` | 86 | 1 | **99%** |
 | `scripts/generate_threat_report.py` | 72 | 1 | **99%** |
 | `scripts/simulate_adversary.py` | 43 | 1 | **98%** |
 | `scripts/test_lambda_local.py` | 36 | 1 | **97%** |
 | `scripts/backfill_enrichment.py` | 68 | 3 | **96%** |
 | `scripts/parse_logs.py` | 106 | 8 | **92%** |
-| **TOTAL CONSOLIDADO** | **747** | **15** | **98%** |
+| **TOTAL CONSOLIDADO** | **833** | **16** | **98%** |
 
 ### Escopo das Suites de Teste:
 * `tests/test_unit_malware_pipeline.py`: Validacao de headers ELF/PE/Script, assinaturas de botnets Mirai/Gafgyt, mineracao de IoCs/C2, VirusTotal v3 e tratamento de Zero-Days.
 * `tests/test_sync_rotation_logic.py`: Validacao de expressoes regulares, deduplicacao por inode, fatiamento deterministico via `sed`, descarte seguro de linhas incompletas e retencao de disco.
 * `tests/test_system_integrity_regression.py`: Validacao de integridade das tabelas Glue (`enriched_attacks` e `enriched_malware`), isolamento de prefixos S3, travamento financeiro FinOps e testes do Deadline Guard.
-* `tests/test_unit_scripts.py`: Cobertura completa de scripts de mineracao historica, relatorios forenses e emulador de adversario.
+* `tests/test_unit_scripts.py`: Cobertura completa de scripts de mineracao historica, diagnostico de saude do pipeline, relatorios forenses e emulador de adversario.
 * `tests/test_terraform_spec.py`: Auditoria estatica de seguranca da infraestrutura IaC (criptografia EBS, isolamento de portas, politicas IAM restritivas).
 
 ---
@@ -190,19 +191,14 @@ pytest --cov=lambda --cov=scripts -v
 
 ```plaintext
 aws-honeypot-threat-intel/
-├── GEMINI.md                    # Regras mandatorias de desenvolvimento e governanca
 ├── PROJECT_SPEC.md              # Especificacoes e premissas do projeto
 ├── README.md                    # Documentacao tecnica completa da arquitetura
 ├── .gitignore                   # Higienizacao estrita de chaves, credenciais e tfstate
-├── .agents/                     # Customizacoes do Antigravity (Skills operacionais)
-│   └── skills/
-│       └── honeypot-pipeline-ops/ # Skill para diagnostico de sincronizacao e governanca
-│           ├── SKILL.md         # Runbook operacional completo
-│           └── scripts/
-│               └── check_pipeline_health.py # Diagnostico automatizado ponta a ponta
 ├── docs/
-│   └── images/
-│       └── grafana_soc_dashboard.png # Captura de tela do SOC Dashboard no Grafana Cloud
+│   ├── images/
+│   │   └── grafana_soc_dashboard.png # Captura de tela do SOC Dashboard no Grafana Cloud
+│   └── runbooks/
+│       └── pipeline_operations_runbook.md # Runbook operacional de SRE, recuperacao e troubleshooting
 ├── terraform/                   # Infraestrutura como Codigo (IaC)
 │   ├── main.tf                  # Provedores e versoes minimas
 │   ├── variables.tf             # Variaveis de rede, portas e retencao
@@ -222,11 +218,12 @@ aws-honeypot-threat-intel/
 ├── scripts/
 │   ├── analyze_2days.py         # Relatorio estatistico de ataques
 │   ├── backfill_enrichment.py   # Script de carga inicial e mineracao historica
+│   ├── check_pipeline_health.py # Diagnostico automatizado CLI de saude e telemetria do pipeline
 │   ├── generate_threat_report.py # Gerador de relatorio executivo Markdown
 │   ├── parse_logs.py            # Conversor de telemetria bruta para formatos legiveis
 │   ├── simulate_adversary.py    # Emulador de adversario automatizado para testes
 │   └── test_lambda_local.py     # Script de execucao e validacao local da Lambda
-└── tests/                       # Suite de testes automatizados (115 testes - 98% cobertura)
+└── tests/                       # Suite de testes automatizados (119 testes - 98% cobertura)
     ├── test_unit_malware_pipeline.py
     ├── test_sync_rotation_logic.py
     ├── test_system_integrity_regression.py
@@ -255,3 +252,17 @@ O Grafana Cloud permite disponibilizar o painel publicamente em modo somente lei
 3. Selecione a aba **Public dashboard**.
 4. Ative a opcao **Generate public URL**.
 5. Copie o link gerado para disponibilizar a visualizacao interativa dos incidentes em tempo real.
+
+---
+
+## 9. Operacao SRE e Diagnostico Automatizado do Pipeline
+
+Para garantir a confiabilidade operacional e a continuidade da ingestao de telemetria sem intervencoes manuais, o repositorio disponibiliza ferramentas e procedimentos formais de sustentacao:
+
+* **Runbook Operacional de SRE e Troubleshooting:** O documento [`docs/runbooks/pipeline_operations_runbook.md`](docs/runbooks/pipeline_operations_runbook.md) detalha a arquitetura de sincronizacao, diagnostico preventivo e resolucao de incidentes (reinicio de containers, recuperacao de dessincronizacao e limites de retencao).
+* **Utilitario CLI de Verificacao de Saude:** O script [`scripts/check_pipeline_health.py`](scripts/check_pipeline_health.py) executa a inspecao automatizada das cinco camadas do ecossistema AWS (credenciais STS, bucket S3, configuracoes da AWS Lambda, trava FinOps do Amazon Athena e status do container/cursor via AWS SSM):
+
+```bash
+python scripts/check_pipeline_health.py
+```
+
