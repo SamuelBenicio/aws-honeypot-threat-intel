@@ -190,9 +190,16 @@ pytest --cov=lambda --cov=scripts -v
 
 ```plaintext
 aws-honeypot-threat-intel/
+├── GEMINI.md                    # Regras mandatorias de desenvolvimento e governanca
 ├── PROJECT_SPEC.md              # Especificacoes e premissas do projeto
 ├── README.md                    # Documentacao tecnica completa da arquitetura
 ├── .gitignore                   # Higienizacao estrita de chaves, credenciais e tfstate
+├── .agents/                     # Customizacoes do Antigravity (Skills operacionais)
+│   └── skills/
+│       └── honeypot-pipeline-ops/ # Skill para diagnostico de sincronizacao e governanca
+│           ├── SKILL.md         # Runbook operacional completo
+│           └── scripts/
+│               └── check_pipeline_health.py # Diagnostico automatizado ponta a ponta
 ├── docs/
 │   └── images/
 │       └── grafana_soc_dashboard.png # Captura de tela do SOC Dashboard no Grafana Cloud
