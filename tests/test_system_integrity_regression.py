@@ -285,3 +285,75 @@ class TestGrafanaDashboardIntegrity:
         for char in content:
             assert ord(char) < 0x1F000
             assert ord(char) not in [0x2623, 0x2728, 0x1F6A8]
+
+    def test_lambda_timeout_guard_and_parallel_prewarm(self, monkeypatch):
+        """
+        Valida que:
+        1. _prewarm_ip_caches enriquece multiplos IPs em paralelo quando ha tempo suficiente.
+        2. Quando o tempo restante do container Lambda cai abaixo do limite de seguranca (10s),
+           o handler ignora chamadas de rede lentas e grava imediatamente no S3 usando fallback local.
+        """
+        handler.GEOIP_CACHE.clear()
+        handler.ABUSE_CACHE.clear()
+        monkeypatch.setattr(handler, "ABUSEIPDB_API_KEY", "dummy_key")
+
+        # 1. Contexto com bastante tempo (60s) -> deve pre-aquecer multiplos IPs em paralelo
+        ctx_ok = MagicMock()
+        ctx_ok.get_remaining_time_in_millis.return_value = 60000
+        assert handler._has_sufficient_time(ctx_ok) is True
+
+        with patch.object(handler, "get_geoip_info") as m_geo, patch.object(handler, "get_abuseipdb_score") as m_abuse:
+            handler._prewarm_ip_caches(["198.51.100.1", "198.51.100.2"], context=ctx_ok)
+            assert m_geo.call_count == 2
+            assert m_abuse.call_count == 2
+
+        # 2. Contexto prestes a sofrer timeout (3s restantes) -> deve usar fallback sem rede e salvar no S3
+        ctx_low = MagicMock()
+        ctx_low.get_remaining_time_in_millis.return_value = 3000
+        assert handler._has_sufficient_time(ctx_low) is False
+
+        # Contexto que levanta excecao ao consultar tempo -> deve retornar True de forma segura
+        ctx_err = MagicMock()
+        ctx_err.get_remaining_time_in_millis.side_effect = RuntimeError("No context")
+        assert handler._has_sufficient_time(ctx_err) is True
+
+        evt = {
+            "Records": [
+                {
+                    "s3": {
+                        "bucket": {"name": "test-b"},
+                        "object": {"key": "cowrie-logs/year=2026/month=10/day=16/cowrie_burst.json"}
+                    }
+                }
+            ]
+        }
+        mock_s3 = MagicMock()
+        mock_body = MagicMock()
+        mock_body.read.return_value = (
+            b'{"eventid":"cowrie.login.failed","src_ip":"203.0.113.10","username":"root","password":"123"}\n'
+            b'{"eventid":"cowrie.login.failed","src_ip":"203.0.113.11","username":"admin","password":"123"}\n'
+        )
+        mock_s3.get_object.return_value = {"Body": mock_body}
+        monkeypatch.setattr(handler, "s3_client", mock_s3)
+
+        with patch.object(handler, "get_geoip_info") as m_geo_low:
+            res = handler.lambda_handler(evt, ctx_low)
+            assert res["total_processed"] == 2
+            m_geo_low.assert_not_called()
+            assert mock_s3.put_object.called
+
+    def test_process_malware_sample_read_no_args_fallback(self, monkeypatch):
+        """Valida fallback caso o stream Body.read() nao aceite argumento posicional de limite de bytes."""
+        class StrictNoArgStream:
+            def read(self):
+                return b"#!/bin/sh\necho test\n"
+
+        mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = {"Body": StrictNoArgStream()}
+        monkeypatch.setattr(handler, "s3_client", mock_s3)
+        monkeypatch.setattr(handler, "VIRUSTOTAL_API_KEY", "")
+        monkeypatch.setattr(handler, "DISCORD_WEBHOOK_URL", "")
+
+        res = handler.process_malware_sample("test-b", "malware-samples/hash_noarg")
+        assert res["sha256"] == "hash_noarg"
+        assert res["magic_type"] == "Linux Shell Script"

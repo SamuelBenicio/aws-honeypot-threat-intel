@@ -72,7 +72,7 @@
             "uid": "bg0n3v8edi8e8e"
           },
           "format": 1,
-          "rawSQL": "SELECT sum(login_attempts) as total_tentativas FROM enriched_attacks;",
+          "rawSQL": "SELECT coalesce(sum(login_attempts), 0) as total_tentativas FROM enriched_attacks;",
           "refId": "A"
         }
       ],
@@ -710,7 +710,7 @@
       "type": "table"
     }
   ],
-  "refresh": "1h",
+  "refresh": "5m",
   "schemaVersion": 38,
   "style": "dark",
   "tags": [

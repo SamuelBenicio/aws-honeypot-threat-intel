@@ -129,6 +129,7 @@ resource "aws_instance" "honeypot_host" {
                   volumes:
                     - ./cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
                     - ./userdb.txt:/cowrie/cowrie-git/etc/userdb.txt:ro
+                    - /etc/ssh/moduli:/etc/ssh/moduli:ro
                     - ./var/log/cowrie:/cowrie/cowrie-git/var/log/cowrie
                     - ./var/lib/cowrie/downloads:/cowrie/cowrie-git/var/lib/cowrie/downloads
                     - ./var/lib/cowrie/tty:/cowrie/cowrie-git/var/lib/cowrie/tty
@@ -157,17 +158,41 @@ resource "aws_instance" "honeypot_host" {
               LOG_DIR="/home/ubuntu/cowrie/var/log/cowrie"
               LOG_FILE="\$LOG_DIR/cowrie.json"
               STATE_FILE="/home/ubuntu/cowrie/.sync_last_position"
+              INODE_FILE="/home/ubuntu/cowrie/.sync_last_inode"
               SYNCED_LIST="/home/ubuntu/cowrie/.synced_rotated_files"
               AWS_BIN="/usr/local/bin/aws"
               if ! command -v "\$AWS_BIN" >/dev/null 2>&1; then
                   AWS_BIN="aws"
               fi
 
-              touch "\$SYNCED_LIST" "\$STATE_FILE"
+              touch "\$SYNCED_LIST" "\$STATE_FILE" "\$INODE_FILE"
 
               # Normaliza permissoes entre container Cowrie (UID 999) e host (UID 1000)
               sudo chown -R 999:999 "\$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
               sudo chmod -R a+rwX "\$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
+
+              # 1.5 Watchdog de Auto-Recuperacao (Self-Healing) do Container e Engine jsonlog
+              if command -v docker >/dev/null 2>&1; then
+                  IS_RUNNING=\$(docker inspect -f '{{.State.Running}}' cowrie-honeypot 2>/dev/null || echo "false")
+                  if [ "\$IS_RUNNING" != "true" ]; then
+                      echo "[!] Watchdog: container cowrie-honeypot parado. Reiniciando..."
+                      (cd /home/ubuntu/cowrie && docker compose up -d) || docker start cowrie-honeypot || true
+                      sleep 3
+                  fi
+
+                  # Verifica se o engine jsonlog falhou ao carregar no ciclo atual do container
+                  STARTED_AT=\$(docker inspect -f '{{.State.StartedAt}}' cowrie-honeypot 2>/dev/null || echo "")
+                  if [ -n "\$STARTED_AT" ]; then
+                      if docker logs --since "\$STARTED_AT" cowrie-honeypot 2>&1 | grep -q "Failed to load output engine: jsonlog" || [ ! -f "\$LOG_FILE" ]; then
+                          echo "[!] Watchdog: detectada falha no engine jsonlog ou ausencia de cowrie.json. Corrigindo permissoes e reiniciando container..."
+                          sudo touch "\$LOG_FILE"
+                          sudo chown -R 999:999 "\$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
+                          sudo chmod -R a+rwX "\$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
+                          docker restart cowrie-honeypot >/dev/null 2>&1 || true
+                          sleep 3
+                      fi
+                  fi
+              fi
 
               # 2. Limpeza atomica de arquivos temporarios via trap
               TEMP_CHUNK=""
@@ -195,7 +220,51 @@ resource "aws_instance" "honeypot_host" {
                   return 1
               }
 
-              # 4. Trata arquivos rotacionados (formato exato: cowrie.json.YYYY-MM-DD)
+              # 3.5 Deteccao de rotacao por Inode (previne duplicacao de arquivo rotacionado e previne perda de linhas na virada do dia)
+              LAST_POS=\$(cat "\$STATE_FILE" 2>/dev/null || echo 0)
+              if ! [[ "\$LAST_POS" =~ ^[0-9]+$ ]]; then
+                  LAST_POS=0
+              fi
+              LAST_INODE=\$(cat "\$INODE_FILE" 2>/dev/null || echo "")
+              CURRENT_INODE=""
+              if [ -f "\$LOG_FILE" ]; then
+                  CURRENT_INODE=\$(stat -c %i "\$LOG_FILE" 2>/dev/null || echo "")
+              fi
+
+              if [ -n "\$LAST_INODE" ] && [ -n "\$CURRENT_INODE" ] && [ "\$CURRENT_INODE" != "\$LAST_INODE" ]; then
+                  echo "[+] Rotacao de cowrie.json detectada via mudanca de inode (\$LAST_INODE -> \$CURRENT_INODE)."
+                  for rot in "\$LOG_DIR"/cowrie.json.[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
+                      if [ -f "\$rot" ]; then
+                          ROT_INODE=\$(stat -c %i "\$rot" 2>/dev/null || echo "")
+                          if [ "\$ROT_INODE" = "\$LAST_INODE" ]; then
+                              base=\$(basename "\$rot")
+                              ROT_DATE=\$(echo "\$base" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+                              YEAR=\$(echo "\$ROT_DATE" | cut -d'-' -f1)
+                              MONTH=\$(echo "\$ROT_DATE" | cut -d'-' -f2)
+                              DAY=\$(echo "\$ROT_DATE" | cut -d'-' -f3)
+                              ROT_TOTAL=\$(wc -l < "\$rot")
+                              if [ "\$ROT_TOTAL" -gt "\$LAST_POS" ]; then
+                                  ROT_TAIL=\$((ROT_TOTAL - LAST_POS))
+                                  TIMESTAMP_ROT=\$(date -u +"%Y%m%d_%H%M%S")
+                                  TEMP_CHUNK="/tmp/cowrie_rot_tail_\$TIMESTAMP_ROT.json"
+                                  tail -n "\$ROT_TAIL" "\$rot" > "\$TEMP_CHUNK"
+                                  TARGET_S3="s3://\$BUCKET_NAME/cowrie-logs/year=\$YEAR/month=\$MONTH/day=\$DAY/cowrie_tail_\$ROT_DATE-\$TIMESTAMP_ROT.json"
+                                  if upload_with_retry "\$TEMP_CHUNK" "\$TARGET_S3"; then
+                                      echo "\$base" >> "\$SYNCED_LIST"
+                                  fi
+                                  rm -f "\$TEMP_CHUNK"
+                              else
+                                  echo "\$base" >> "\$SYNCED_LIST"
+                              fi
+                          fi
+                      fi
+                  done
+                  LAST_POS=0
+                  echo "0" > "\$STATE_FILE"
+                  echo "\$CURRENT_INODE" > "\$INODE_FILE"
+              fi
+
+              # 4. Trata arquivos rotacionados orfaos (formato exato: cowrie.json.YYYY-MM-DD)
               for rot in "\$LOG_DIR"/cowrie.json.[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
                   if [ -f "\$rot" ]; then
                       base=\$(basename "\$rot")
@@ -227,11 +296,6 @@ resource "aws_instance" "honeypot_host" {
                   TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
                   TEMP_CHUNK="/tmp/cowrie_chunk_$TIMESTAMP.json"
 
-                  LAST_POS=0
-                  if [ -f "$STATE_FILE" ]; then
-                      LAST_POS=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
-                  fi
-
                   TOTAL_LINES=$(wc -l < "$LOG_FILE")
 
                   if [ "$TOTAL_LINES" -lt "$LAST_POS" ]; then
@@ -254,8 +318,13 @@ resource "aws_instance" "honeypot_host" {
                       TARGET_S3="s3://$BUCKET_NAME/cowrie-logs/$DATE_PATH/cowrie_$TIMESTAMP.json"
                       if upload_with_retry "$TEMP_CHUNK" "$TARGET_S3"; then
                           echo "$EFFECTIVE_LINES" > "$STATE_FILE"
+                          if [ -n "$CURRENT_INODE" ]; then
+                              echo "$CURRENT_INODE" > "$INODE_FILE"
+                          fi
                       fi
                       rm -f "$TEMP_CHUNK"
+                  elif [ -n "$CURRENT_INODE" ]; then
+                      echo "$CURRENT_INODE" > "$INODE_FILE"
                   fi
               fi
 

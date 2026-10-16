@@ -191,6 +191,71 @@ class TestSyncRotationLogic(unittest.TestCase):
             self.assertIn("cowrie.json.2026-09-02", to_delete)
             self.assertNotIn("cowrie.json.2026-10-12", to_delete)
 
+    def test_inode_rotation_prevents_duplication_and_midnight_gap(self):
+        """
+        Valida que o rastreamento por Inode (.sync_last_inode) resolve simultaneamente:
+        1. Duplicacao na rotacao: envia apenas o delta final (ROT_TOTAL - LAST_POS) do arquivo
+           rotacionado cujo inode coincide com LAST_INODE e o registra em .synced_rotated_files.
+        2. Midnight Gap: mesmo que o novo cowrie.json ja tenha mais linhas que LAST_POS no
+           primeiro ciclo apos a meia-noite, a mudanca de inode zera LAST_POS=0 sem perder linhas.
+        """
+        last_inode = "100500"
+        last_pos = 80
+
+        # Cenario: a meia-noite, o antigo cowrie.json (inode 100500) recebeu mais 15 linhas (total 95)
+        # e foi renomeado para cowrie.json.2026-10-16 (mantendo inode 100500).
+        # Um novo cowrie.json (inode 200999) foi criado e ja recebeu 110 linhas (mais que last_pos=80!).
+        rotated_file = {"name": "cowrie.json.2026-10-16", "inode": "100500", "total_lines": 95}
+        active_file = {"name": "cowrie.json", "inode": "200999", "total_lines": 110}
+
+        synced_rotated = set()
+        uploaded_chunks = []
+
+        # Passo 3.5: Deteccao de mudanca de inode
+        if last_inode and active_file["inode"] != last_inode:
+            if rotated_file["inode"] == last_inode:
+                if rotated_file["total_lines"] > last_pos:
+                    rot_tail = rotated_file["total_lines"] - last_pos
+                    uploaded_chunks.append(("rot_tail", rot_tail))
+                synced_rotated.add(rotated_file["name"])
+            last_pos = 0
+            last_inode = active_file["inode"]
+
+        # Passo 4: Verificacao de rotacionados nao sincronizados
+        if rotated_file["name"] not in synced_rotated:
+            uploaded_chunks.append(("rot_full", rotated_file["total_lines"]))
+
+        # Passo 6: Sincronizacao do arquivo ativo
+        if active_file["total_lines"] > last_pos:
+            active_tail = active_file["total_lines"] - last_pos
+            uploaded_chunks.append(("active_tail", active_tail))
+            last_pos = active_file["total_lines"]
+
+        # Validacoes matematicas:
+        # 1. Apenas as 15 linhas finais do arquivo rotacionado foram enviadas (sem duplicar as 80 anteriores)
+        # 2. O arquivo rotacionado nao foi reenviado por inteiro no Passo 4
+        # 3. Todas as 110 linhas do novo cowrie.json foram enviadas (sem sofrer Midnight Gap)
+        self.assertEqual(uploaded_chunks, [("rot_tail", 15), ("active_tail", 110)])
+        self.assertIn("cowrie.json.2026-10-16", synced_rotated)
+        self.assertEqual(last_pos, 110)
+        self.assertEqual(last_inode, "200999")
+
+    def test_self_healing_watchdog_present_in_ec2_tf(self):
+        """
+        Garante que o script sync_logs_to_s3.sh definido em terraform/ec2.tf contem:
+        - Watchdog de auto-recuperacao para falha no engine jsonlog
+        - Rastreamento de rotacao por inode (.sync_last_inode)
+        - Mount do /etc/ssh/moduli no docker-compose.yml
+        """
+        ec2_tf_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "terraform", "ec2.tf")
+        with open(ec2_tf_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("Failed to load output engine: jsonlog", content)
+        self.assertIn(".sync_last_inode", content)
+        self.assertIn("/etc/ssh/moduli:/etc/ssh/moduli:ro", content)
+        self.assertIn("docker restart cowrie-honeypot", content)
+
 
 if __name__ == "__main__":
     unittest.main()

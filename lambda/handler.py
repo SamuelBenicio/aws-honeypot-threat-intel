@@ -14,6 +14,7 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 import boto3
 
 # Inicialização de clientes AWS
@@ -27,6 +28,7 @@ ABUSEIPDB_API_KEY = os.environ.get("ABUSEIPDB_API_KEY", "")
 VIRUSTOTAL_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 TTL_DAYS = int(os.environ.get("TTL_DAYS", "60"))
+MAX_MALWARE_BYTES = int(os.environ.get("MAX_MALWARE_BYTES", str(10 * 1024 * 1024)))
 
 # Cache em memória durante o ciclo de vida do container Lambda
 GEOIP_CACHE = {}
@@ -463,6 +465,40 @@ def send_discord_notification(enriched_event: dict):
         print(f"[!] Falha ao enviar notificação Discord: {e}")
 
 
+def _has_sufficient_time(context, min_remaining_ms: int = 10000) -> bool:
+    """
+    Verifica se o container AWS Lambda ainda possui margem segura de tempo antes do timeout
+    para realizar chamadas externas de rede (GeoIP / AbuseIPDB), garantindo que a gravação
+    no S3 (Athena/Grafana) nunca seja interrompida por timeout.
+    """
+    if context is not None and hasattr(context, "get_remaining_time_in_millis"):
+        try:
+            remaining = context.get_remaining_time_in_millis()
+            if isinstance(remaining, (int, float)) and remaining < min_remaining_ms:
+                return False
+        except Exception:
+            pass
+    return True
+
+
+def _prewarm_ip_caches(ips: list[str], context=None):
+    """
+    Pré-aquece em paralelo (ThreadPoolExecutor) os caches de GeoIP e AbuseIPDB
+    quando um lote contém múltiplos IPs inéditos, prevenindo timeouts sequenciais.
+    """
+    uncached = [ip for ip in ips if ip not in GEOIP_CACHE or (ABUSEIPDB_API_KEY and ip not in ABUSE_CACHE)]
+    if len(uncached) <= 1 or not _has_sufficient_time(context):
+        return
+
+    def _fetch_one(ip_addr: str):
+        if _has_sufficient_time(context):
+            get_geoip_info(ip_addr)
+            get_abuseipdb_score(ip_addr)
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        list(executor.map(_fetch_one, uncached))
+
+
 def process_malware_sample(bucket: str, key: str) -> dict:
     """
     Processa amostra binária de malware enviada para o prefixo malware-samples/
@@ -470,7 +506,11 @@ def process_malware_sample(bucket: str, key: str) -> dict:
     """
     print(f"[+] Iniciando análise forense do malware s3://{bucket}/{key}...")
     response = s3_client.get_object(Bucket=bucket, Key=key)
-    binary_data = response["Body"].read()
+    body_stream = response["Body"]
+    try:
+        binary_data = body_stream.read(MAX_MALWARE_BYTES)
+    except TypeError:
+        binary_data = body_stream.read()
 
     file_hash = os.path.basename(key)
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -559,7 +599,7 @@ def lambda_handler(event, context):
         print(f"[+] Baixando arquivo s3://{bucket}/{key}...")
         try:
             response = s3_client.get_object(Bucket=bucket, Key=key)
-            content = response["Body"].read().decode("utf-8")
+            content = response["Body"].read().decode("utf-8", errors="replace")
             lines = content.splitlines()
         except Exception as e:
             print(f"[!] Erro ao ler objeto do S3 ({key}): {e}")
@@ -568,11 +608,30 @@ def lambda_handler(event, context):
         aggregated_events = parse_cowrie_records(lines)
         print(f"[+] Encontrados {len(aggregated_events)} atacantes distintos no arquivo {key}")
 
+        # Pré-aquece enriquecimento em paralelo se houver múltiplos IPs
+        _prewarm_ip_caches([atk["ip"] for atk in aggregated_events], context=context)
+
         enriched_items = []
         for atk in aggregated_events:
             ip = atk["ip"]
-            geo = get_geoip_info(ip)
-            abuse = get_abuseipdb_score(ip)
+            if _has_sufficient_time(context):
+                geo = get_geoip_info(ip)
+                abuse = get_abuseipdb_score(ip)
+            else:
+                geo = GEOIP_CACHE.get(ip, {
+                    "country_code": "XX",
+                    "country_name": "Desconhecido",
+                    "city": "Desconhecido",
+                    "latitude": Decimal("0.0"),
+                    "longitude": Decimal("0.0"),
+                    "isp": "Desconhecido",
+                })
+                abuse = ABUSE_CACHE.get(ip, {
+                    "abuse_score": 0,
+                    "total_reports": 0,
+                    "is_whitelisted": False,
+                    "abuse_checked": False,
+                })
 
             item = {
                 "ip_address": ip,
@@ -596,7 +655,8 @@ def lambda_handler(event, context):
             }
             enriched_items.append(item)
             total_processed += 1
-            send_discord_notification(item)
+            if _has_sufficient_time(context):
+                send_discord_notification(item)
 
         if enriched_items:
             jsonl_payload = "\n".join(json.dumps(it, ensure_ascii=False) for it in enriched_items) + "\n"
