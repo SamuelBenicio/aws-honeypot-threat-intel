@@ -142,52 +142,58 @@ resource "aws_instance" "honeypot_host" {
               COMPOSE_EOF
 
               # sync_logs_to_s3.sh
-              cat <<SYNC_EOF > "$COWRIE_DIR/sync_logs_to_s3.sh"
+              cat <<'SYNC_EOF' > "$COWRIE_DIR/sync_logs_to_s3.sh"
               #!/usr/bin/env bash
               set -euo pipefail
 
               # 1. Trava atomica contra execucoes concorrentes (flock)
               LOCK_FILE="/home/ubuntu/cowrie/.sync.lock"
-              exec 200>"\$LOCK_FILE"
+              exec 200>"$LOCK_FILE"
               if ! flock -n 200; then
                   echo "[!] Instancia anterior de sincronizacao ainda ativa. Ignorando execucao concorrente."
                   exit 0
               fi
 
+              # 1.1 Controle de rotacao do proprio log do cron para evitar esgotamento de disco EBS
+              CRON_LOG="/home/ubuntu/cowrie/cowrie-s3-sync.log"
+              if [ -f "$CRON_LOG" ] && [ "$(wc -l < "$CRON_LOG" 2>/dev/null || echo 0)" -gt 5000 ]; then
+                  tail -n 1000 "$CRON_LOG" > "$CRON_LOG.tmp" && mv "$CRON_LOG.tmp" "$CRON_LOG"
+              fi
+
               BUCKET_NAME="${aws_s3_bucket.honeypot_logs.id}"
               LOG_DIR="/home/ubuntu/cowrie/var/log/cowrie"
-              LOG_FILE="\$LOG_DIR/cowrie.json"
+              LOG_FILE="$LOG_DIR/cowrie.json"
               STATE_FILE="/home/ubuntu/cowrie/.sync_last_position"
               INODE_FILE="/home/ubuntu/cowrie/.sync_last_inode"
               SYNCED_LIST="/home/ubuntu/cowrie/.synced_rotated_files"
               AWS_BIN="/usr/local/bin/aws"
-              if ! command -v "\$AWS_BIN" >/dev/null 2>&1; then
+              if ! command -v "$AWS_BIN" >/dev/null 2>&1; then
                   AWS_BIN="aws"
               fi
 
-              touch "\$SYNCED_LIST" "\$STATE_FILE" "\$INODE_FILE"
+              touch "$SYNCED_LIST" "$STATE_FILE" "$INODE_FILE"
 
               # Normaliza permissoes entre container Cowrie (UID 999) e host (UID 1000)
-              sudo chown -R 999:999 "\$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
-              sudo chmod -R a+rwX "\$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
+              sudo chown -R 999:999 "$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
+              sudo chmod -R a+rwX "$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
 
               # 1.5 Watchdog de Auto-Recuperacao (Self-Healing) do Container e Engine jsonlog
               if command -v docker >/dev/null 2>&1; then
-                  IS_RUNNING=\$(docker inspect -f '{{.State.Running}}' cowrie-honeypot 2>/dev/null || echo "false")
-                  if [ "\$IS_RUNNING" != "true" ]; then
+                  IS_RUNNING=$(docker inspect -f '{{.State.Running}}' cowrie-honeypot 2>/dev/null || echo "false")
+                  if [ "$IS_RUNNING" != "true" ]; then
                       echo "[!] Watchdog: container cowrie-honeypot parado. Reiniciando..."
                       (cd /home/ubuntu/cowrie && docker compose up -d) || docker start cowrie-honeypot || true
                       sleep 3
                   fi
 
                   # Verifica se o engine jsonlog falhou ao carregar no ciclo atual do container
-                  STARTED_AT=\$(docker inspect -f '{{.State.StartedAt}}' cowrie-honeypot 2>/dev/null || echo "")
-                  if [ -n "\$STARTED_AT" ]; then
-                      if docker logs --since "\$STARTED_AT" cowrie-honeypot 2>&1 | grep -q "Failed to load output engine: jsonlog" || [ ! -f "\$LOG_FILE" ]; then
+                  STARTED_AT=$(docker inspect -f '{{.State.StartedAt}}' cowrie-honeypot 2>/dev/null || echo "")
+                  if [ -n "$STARTED_AT" ]; then
+                      if docker logs --since "$STARTED_AT" cowrie-honeypot 2>&1 | grep -q "Failed to load output engine: jsonlog" || [ ! -f "$LOG_FILE" ]; then
                           echo "[!] Watchdog: detectada falha no engine jsonlog ou ausencia de cowrie.json. Corrigindo permissoes e reiniciando container..."
-                          sudo touch "\$LOG_FILE"
-                          sudo chown -R 999:999 "\$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
-                          sudo chmod -R a+rwX "\$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
+                          sudo touch "$LOG_FILE"
+                          sudo chown -R 999:999 "$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
+                          sudo chmod -R a+rwX "$LOG_DIR" "/home/ubuntu/cowrie/var/lib/cowrie" 2>/dev/null || true
                           docker restart cowrie-honeypot >/dev/null 2>&1 || true
                           sleep 3
                       fi
@@ -197,82 +203,87 @@ resource "aws_instance" "honeypot_host" {
               # 2. Limpeza atomica de arquivos temporarios via trap
               TEMP_CHUNK=""
               cleanup() {
-                  if [ -n "\$TEMP_CHUNK" ] && [ -f "\$TEMP_CHUNK" ]; then
-                      rm -f "\$TEMP_CHUNK"
+                  if [ -n "$TEMP_CHUNK" ] && [ -f "$TEMP_CHUNK" ]; then
+                      rm -f "$TEMP_CHUNK" "$TEMP_CHUNK.clean"
                   fi
               }
               trap cleanup EXIT INT TERM
 
               # 3. Funcao de upload com retentativa contra instabilidade transiente
               upload_with_retry() {
-                  local src="\$1"
-                  local dst="\$2"
+                  local src="$1"
+                  local dst="$2"
                   local max_retries=3
                   local count=1
-                  while [ "\$count" -le "\$max_retries" ]; do
-                      if "\$AWS_BIN" s3 cp "\$src" "\$dst" --only-show-errors; then
+                  while [ "$count" -le "$max_retries" ]; do
+                      if "$AWS_BIN" s3 cp "$src" "$dst" --only-show-errors; then
                           return 0
                       fi
-                      echo "[!] Falha no upload para \$dst (tentativa \$count/\$max_retries). Retentando em 2s..."
+                      echo "[!] Falha no upload para $dst (tentativa $count/$max_retries). Retentando em 2s..."
                       sleep 2
-                      count=\$((count + 1))
+                      count=$((count + 1))
                   done
                   return 1
               }
 
               # 3.5 Deteccao de rotacao por Inode (previne duplicacao de arquivo rotacionado e previne perda de linhas na virada do dia)
-              LAST_POS=\$(cat "\$STATE_FILE" 2>/dev/null || echo 0)
-              if ! [[ "\$LAST_POS" =~ ^[0-9]+$ ]]; then
+              LAST_POS=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
+              if ! [[ "$LAST_POS" =~ ^[0-9]+$ ]]; then
                   LAST_POS=0
               fi
-              LAST_INODE=\$(cat "\$INODE_FILE" 2>/dev/null || echo "")
+              LAST_INODE=$(cat "$INODE_FILE" 2>/dev/null || echo "")
               CURRENT_INODE=""
-              if [ -f "\$LOG_FILE" ]; then
-                  CURRENT_INODE=\$(stat -c %i "\$LOG_FILE" 2>/dev/null || echo "")
+              if [ -f "$LOG_FILE" ]; then
+                  CURRENT_INODE=$(stat -c %i "$LOG_FILE" 2>/dev/null || echo "")
               fi
 
-              if [ -n "\$LAST_INODE" ] && [ -n "\$CURRENT_INODE" ] && [ "\$CURRENT_INODE" != "\$LAST_INODE" ]; then
-                  echo "[+] Rotacao de cowrie.json detectada via mudanca de inode (\$LAST_INODE -> \$CURRENT_INODE)."
-                  for rot in "\$LOG_DIR"/cowrie.json.[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
-                      if [ -f "\$rot" ]; then
-                          ROT_INODE=\$(stat -c %i "\$rot" 2>/dev/null || echo "")
-                          if [ "\$ROT_INODE" = "\$LAST_INODE" ]; then
-                              base=\$(basename "\$rot")
-                              ROT_DATE=\$(echo "\$base" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
-                              YEAR=\$(echo "\$ROT_DATE" | cut -d'-' -f1)
-                              MONTH=\$(echo "\$ROT_DATE" | cut -d'-' -f2)
-                              DAY=\$(echo "\$ROT_DATE" | cut -d'-' -f3)
-                              ROT_TOTAL=\$(wc -l < "\$rot")
-                              if [ "\$ROT_TOTAL" -gt "\$LAST_POS" ]; then
-                                  ROT_TAIL=\$((ROT_TOTAL - LAST_POS))
-                                  TIMESTAMP_ROT=\$(date -u +"%Y%m%d_%H%M%S")
-                                  TEMP_CHUNK="/tmp/cowrie_rot_tail_\$TIMESTAMP_ROT.json"
-                                  tail -n "\$ROT_TAIL" "\$rot" > "\$TEMP_CHUNK"
-                                  TARGET_S3="s3://\$BUCKET_NAME/cowrie-logs/year=\$YEAR/month=\$MONTH/day=\$DAY/cowrie_tail_\$ROT_DATE-\$TIMESTAMP_ROT.json"
-                                  if upload_with_retry "\$TEMP_CHUNK" "\$TARGET_S3"; then
-                                      echo "\$base" >> "\$SYNCED_LIST"
+              if [ -n "$LAST_INODE" ] && [ -n "$CURRENT_INODE" ] && [ "$CURRENT_INODE" != "$LAST_INODE" ]; then
+                  echo "[+] Rotacao de cowrie.json detectada via mudanca de inode ($LAST_INODE -> $CURRENT_INODE)."
+                  ROT_HANDLED=true
+                  for rot in "$LOG_DIR"/cowrie.json.[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
+                      if [ -f "$rot" ]; then
+                          ROT_INODE=$(stat -c %i "$rot" 2>/dev/null || echo "")
+                          if [ "$ROT_INODE" = "$LAST_INODE" ]; then
+                              base=$(basename "$rot")
+                              ROT_DATE=$(echo "$base" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+                              YEAR=$(echo "$ROT_DATE" | cut -d'-' -f1)
+                              MONTH=$(echo "$ROT_DATE" | cut -d'-' -f2)
+                              DAY=$(echo "$ROT_DATE" | cut -d'-' -f3)
+                              ROT_TOTAL=$(wc -l < "$rot")
+                              if [ "$ROT_TOTAL" -gt "$LAST_POS" ]; then
+                                  START_LINE=$((LAST_POS + 1))
+                                  TIMESTAMP_ROT=$(date -u +"%Y%m%d_%H%M%S")
+                                  TEMP_CHUNK="/tmp/cowrie_rot_tail_$TIMESTAMP_ROT.json"
+                                  sed -n "$${START_LINE},$${ROT_TOTAL}p" "$rot" > "$TEMP_CHUNK"
+                                  TARGET_S3="s3://$BUCKET_NAME/cowrie-logs/year=$YEAR/month=$MONTH/day=$DAY/cowrie_tail_$ROT_DATE-$TIMESTAMP_ROT.json"
+                                  if upload_with_retry "$TEMP_CHUNK" "$TARGET_S3"; then
+                                      echo "$base" >> "$SYNCED_LIST"
+                                  else
+                                      ROT_HANDLED=false
                                   fi
-                                  rm -f "\$TEMP_CHUNK"
+                                  rm -f "$TEMP_CHUNK"
                               else
-                                  echo "\$base" >> "\$SYNCED_LIST"
+                                  echo "$base" >> "$SYNCED_LIST"
                               fi
                           fi
                       fi
                   done
-                  LAST_POS=0
-                  echo "0" > "\$STATE_FILE"
-                  echo "\$CURRENT_INODE" > "\$INODE_FILE"
+                  if [ "$ROT_HANDLED" = "true" ]; then
+                      LAST_POS=0
+                      echo "0" > "$STATE_FILE"
+                      echo "$CURRENT_INODE" > "$INODE_FILE"
+                  fi
               fi
 
               # 4. Trata arquivos rotacionados orfaos (formato exato: cowrie.json.YYYY-MM-DD)
-              for rot in "\$LOG_DIR"/cowrie.json.[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
-                  if [ -f "\$rot" ]; then
-                      base=\$(basename "\$rot")
-                      if ! grep -qxF "\$base" "\$SYNCED_LIST"; then
-                          ROT_DATE=\$(echo "\$base" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
-                          YEAR=\$(echo "\$ROT_DATE" | cut -d'-' -f1)
-                          MONTH=\$(echo "\$ROT_DATE" | cut -d'-' -f2)
-                          DAY=\$(echo "\$ROT_DATE" | cut -d'-' -f3)
+              for rot in "$LOG_DIR"/cowrie.json.[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
+                  if [ -f "$rot" ]; then
+                      base=$(basename "$rot")
+                      if ! grep -qxF "$base" "$SYNCED_LIST"; then
+                          ROT_DATE=$(echo "$base" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+                          YEAR=$(echo "$ROT_DATE" | cut -d'-' -f1)
+                          MONTH=$(echo "$ROT_DATE" | cut -d'-' -f2)
+                          DAY=$(echo "$ROT_DATE" | cut -d'-' -f3)
                           TARGET_S3="s3://$BUCKET_NAME/cowrie-logs/year=$YEAR/month=$MONTH/day=$DAY/cowrie_full_$ROT_DATE.json"
                           if upload_with_retry "$rot" "$TARGET_S3"; then
                               echo "$base" >> "$SYNCED_LIST"
@@ -290,7 +301,7 @@ resource "aws_instance" "honeypot_host" {
                   fi
               done
 
-              # 6. Trata o arquivo de log ativo em tempo real
+              # 6. Trata o arquivo de log ativo em tempo real (fatiamento deterministico via sed)
               if [ -f "$LOG_FILE" ]; then
                   DATE_PATH=$(date -u +"year=%Y/month=%m/day=%d")
                   TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
@@ -300,29 +311,39 @@ resource "aws_instance" "honeypot_host" {
 
                   if [ "$TOTAL_LINES" -lt "$LAST_POS" ]; then
                       LAST_POS=0
+                      echo "0" > "$STATE_FILE"
                   fi
 
                   if [ "$TOTAL_LINES" -gt "$LAST_POS" ]; then
+                      START_LINE=$((LAST_POS + 1))
                       TAIL_COUNT=$((TOTAL_LINES - LAST_POS))
-                      tail -n "$TAIL_COUNT" "$LOG_FILE" > "$TEMP_CHUNK"
+                      sed -n "$${START_LINE},$${TOTAL_LINES}p" "$LOG_FILE" > "$TEMP_CHUNK"
 
                       # Valida integridade da ultima linha (prevencao contra JSON incompleto / corte concorrente)
                       LAST_CHAR=$(tail -c 2 "$TEMP_CHUNK" 2>/dev/null | tr -d '\n\r' || true)
                       EFFECTIVE_LINES="$TOTAL_LINES"
-                      if [ "$LAST_CHAR" != "}" ] && [ "$TAIL_COUNT" -gt 1 ]; then
-                          head -n -1 "$TEMP_CHUNK" > "$TEMP_CHUNK.clean"
-                          mv "$TEMP_CHUNK.clean" "$TEMP_CHUNK"
-                          EFFECTIVE_LINES=$((TOTAL_LINES - 1))
-                      fi
-
-                      TARGET_S3="s3://$BUCKET_NAME/cowrie-logs/$DATE_PATH/cowrie_$TIMESTAMP.json"
-                      if upload_with_retry "$TEMP_CHUNK" "$TARGET_S3"; then
-                          echo "$EFFECTIVE_LINES" > "$STATE_FILE"
-                          if [ -n "$CURRENT_INODE" ]; then
-                              echo "$CURRENT_INODE" > "$INODE_FILE"
+                      if [ "$LAST_CHAR" != "}" ]; then
+                          if [ "$TAIL_COUNT" -le 1 ]; then
+                              # Unica linha nova ainda esta sendo escrita pelo Cowrie: aguarda proximo ciclo
+                              rm -f "$TEMP_CHUNK"
+                              EFFECTIVE_LINES="$LAST_POS"
+                          else
+                              head -n -1 "$TEMP_CHUNK" > "$TEMP_CHUNK.clean"
+                              mv "$TEMP_CHUNK.clean" "$TEMP_CHUNK"
+                              EFFECTIVE_LINES=$((TOTAL_LINES - 1))
                           fi
                       fi
-                      rm -f "$TEMP_CHUNK"
+
+                      if [ -f "$TEMP_CHUNK" ] && [ -s "$TEMP_CHUNK" ]; then
+                          TARGET_S3="s3://$BUCKET_NAME/cowrie-logs/$DATE_PATH/cowrie_$TIMESTAMP.json"
+                          if upload_with_retry "$TEMP_CHUNK" "$TARGET_S3"; then
+                              echo "$EFFECTIVE_LINES" > "$STATE_FILE"
+                              if [ -n "$CURRENT_INODE" ]; then
+                                  echo "$CURRENT_INODE" > "$INODE_FILE"
+                              fi
+                          fi
+                          rm -f "$TEMP_CHUNK"
+                      fi
                   elif [ -n "$CURRENT_INODE" ]; then
                       echo "$CURRENT_INODE" > "$INODE_FILE"
                   fi
@@ -334,18 +355,23 @@ resource "aws_instance" "honeypot_host" {
               touch "$SYNCED_MALWARE_LIST"
 
               if [ -d "$MALWARE_DIR" ]; then
+                  NOW_EPOCH=$(date +%s)
                   for sample in "$MALWARE_DIR"/*; do
-                      if [ -f "$sample" ]; then
+                      if [ -f "$sample" ] && [ -s "$sample" ]; then
                           sample_hash=$(basename "$sample")
                           if [ $${#sample_hash} -eq 64 ]; then
-                              if grep -qxF "$sample_hash" "$SYNCED_MALWARE_LIST"; then
-                                  rm -f "$sample"
-                              else
-                                  TARGET_S3="s3://$BUCKET_NAME/malware-samples/$sample_hash"
-                                  if upload_with_retry "$sample" "$TARGET_S3"; then
-                                      echo "$sample_hash" >> "$SYNCED_MALWARE_LIST"
+                              SAMPLE_MTIME=$(stat -c %Y "$sample" 2>/dev/null || echo "$NOW_EPOCH")
+                              # Aguarda pelo menos 2 segundos desde a ultima escrita para garantir download concluido
+                              if [ $((NOW_EPOCH - SAMPLE_MTIME)) -ge 2 ]; then
+                                  if grep -qxF "$sample_hash" "$SYNCED_MALWARE_LIST"; then
                                       rm -f "$sample"
-                                      echo "[+] Malware enviado ao S3 e removido do disco local: $sample_hash"
+                                  else
+                                      TARGET_S3="s3://$BUCKET_NAME/malware-samples/$sample_hash"
+                                      if upload_with_retry "$sample" "$TARGET_S3"; then
+                                          echo "$sample_hash" >> "$SYNCED_MALWARE_LIST"
+                                          rm -f "$sample"
+                                          echo "[+] Malware enviado ao S3 e removido do disco local: $sample_hash"
+                                      fi
                                   fi
                               fi
                           fi

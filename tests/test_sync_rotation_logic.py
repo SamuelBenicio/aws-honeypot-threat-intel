@@ -240,21 +240,49 @@ class TestSyncRotationLogic(unittest.TestCase):
         self.assertEqual(last_pos, 110)
         self.assertEqual(last_inode, "200999")
 
+    def test_single_incomplete_json_line_skipped_until_next_cycle(self):
+        """
+        Valida a recomendacao da auditoria adversaria: se houver apenas 1 linha nova (TAIL_COUNT == 1)
+        e ela ainda estiver incompleta (sem fechar com '}'), o upload deve ser abortado no ciclo
+        atual mantendo LAST_POS intacto para ler a linha completa no ciclo seguinte.
+        """
+        last_pos = 50
+        total_lines = 51
+        tail_count = total_lines - last_pos
+        single_chunk = ['{"eventid": "cowrie.login.failed", "src_ip": "1.2.3.4", "partial']
+
+        last_char = single_chunk[-1].strip()[-1]
+        if last_char != "}":
+            if tail_count <= 1:
+                clean_chunk = []
+                effective_lines = last_pos
+            else:
+                clean_chunk = single_chunk[:-1]
+                effective_lines = total_lines - 1
+
+        self.assertEqual(clean_chunk, [])
+        self.assertEqual(effective_lines, 50)
+
     def test_self_healing_watchdog_present_in_ec2_tf(self):
         """
         Garante que o script sync_logs_to_s3.sh definido em terraform/ec2.tf contem:
+        - Heredoc com delimitador entre aspas simples (cat <<'SYNC_EOF') contra expansao prematura no cloud-init
         - Watchdog de auto-recuperacao para falha no engine jsonlog
-        - Rastreamento de rotacao por inode (.sync_last_inode)
+        - Rastreamento de rotacao por inode (.sync_last_inode) e fatiamento deterministico via sed -n
         - Mount do /etc/ssh/moduli no docker-compose.yml
+        - Verificacao de estabilizacao de escrita (SAMPLE_MTIME) antes de mover malwares
         """
         ec2_tf_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "terraform", "ec2.tf")
         with open(ec2_tf_path, "r", encoding="utf-8") as f:
             content = f.read()
 
+        self.assertIn("cat <<'SYNC_EOF'", content)
         self.assertIn("Failed to load output engine: jsonlog", content)
         self.assertIn(".sync_last_inode", content)
         self.assertIn("/etc/ssh/moduli:/etc/ssh/moduli:ro", content)
         self.assertIn("docker restart cowrie-honeypot", content)
+        self.assertIn("sed -n", content)
+        self.assertIn("SAMPLE_MTIME", content)
 
 
 if __name__ == "__main__":

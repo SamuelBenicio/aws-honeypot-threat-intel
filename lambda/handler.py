@@ -8,6 +8,7 @@ import os
 import json
 import hashlib
 import re
+import threading
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -29,20 +30,31 @@ VIRUSTOTAL_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 TTL_DAYS = int(os.environ.get("TTL_DAYS", "60"))
 MAX_MALWARE_BYTES = int(os.environ.get("MAX_MALWARE_BYTES", str(10 * 1024 * 1024)))
+MAX_CACHE_ENTRIES = 2000
 
-# Cache em memória durante o ciclo de vida do container Lambda
+# Cache em memória durante o ciclo de vida do container Lambda (protegido por Lock)
+CACHE_LOCK = threading.Lock()
 GEOIP_CACHE = {}
 ABUSE_CACHE = {}
 VT_CACHE = {}
 
 
+def _cache_set(cache_dict: dict, key: str, value: dict):
+    """Armazena valor no cache em memória de forma thread-safe com teto de tamanho."""
+    with CACHE_LOCK:
+        if len(cache_dict) >= MAX_CACHE_ENTRIES:
+            cache_dict.clear()
+        cache_dict[key] = value
+
+
 def get_geoip_info(ip_address: str) -> dict:
     """
     Obtém metadados geográficos (País, Cidade, Latitude, Longitude) via serviço público rápido.
-    Possui cache em memória para evitar chamadas redundantes para o mesmo IP.
+    Possui cache em memória apenas para respostas válidas (evita envenenamento por falha transiente).
     """
-    if ip_address in GEOIP_CACHE:
-        return GEOIP_CACHE[ip_address]
+    with CACHE_LOCK:
+        if ip_address in GEOIP_CACHE:
+            return GEOIP_CACHE[ip_address]
 
     # IPs privados/locais
     if ip_address.startswith(("10.", "172.16.", "192.168.", "127.")):
@@ -68,12 +80,12 @@ def get_geoip_info(ip_address: str) -> dict:
                     "longitude": Decimal(str(round(data.get("longitude", 0.0), 4))),
                     "isp": data.get("connection", {}).get("isp", "Desconhecido"),
                 }
-                GEOIP_CACHE[ip_address] = res
+                _cache_set(GEOIP_CACHE, ip_address, res)
                 return res
     except Exception as e:
         print(f"[!] Falha na resolução GeoIP para {ip_address}: {e}")
 
-    fallback = {
+    return {
         "country_code": "XX",
         "country_name": "Desconhecido",
         "city": "Desconhecido",
@@ -81,8 +93,6 @@ def get_geoip_info(ip_address: str) -> dict:
         "longitude": Decimal("0.0"),
         "isp": "Desconhecido",
     }
-    GEOIP_CACHE[ip_address] = fallback
-    return fallback
 
 
 def get_abuseipdb_score(ip_address: str) -> dict:
@@ -98,8 +108,9 @@ def get_abuseipdb_score(ip_address: str) -> dict:
             "abuse_checked": False,
         }
 
-    if ip_address in ABUSE_CACHE:
-        return ABUSE_CACHE[ip_address]
+    with CACHE_LOCK:
+        if ip_address in ABUSE_CACHE:
+            return ABUSE_CACHE[ip_address]
 
     url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={urllib.parse.quote(ip_address)}&maxAgeInDays=90"
     headers = {
@@ -119,21 +130,19 @@ def get_abuseipdb_score(ip_address: str) -> dict:
                 "is_whitelisted": bool(data.get("isWhitelisted", False)),
                 "abuse_checked": True,
             }
-            ABUSE_CACHE[ip_address] = res
+            _cache_set(ABUSE_CACHE, ip_address, res)
             return res
     except urllib.error.HTTPError as e:
         print(f"[!] Erro HTTP AbuseIPDB para {ip_address}: {e.code} - {e.reason}")
     except Exception as e:
         print(f"[!] Falha na consulta AbuseIPDB para {ip_address}: {e}")
 
-    fallback = {
+    return {
         "abuse_score": 0,
         "total_reports": 0,
         "is_whitelisted": False,
         "abuse_checked": False,
     }
-    ABUSE_CACHE[ip_address] = fallback
-    return fallback
 
 
 def get_virustotal_report(sha256_hash: str) -> dict:
@@ -150,8 +159,9 @@ def get_virustotal_report(sha256_hash: str) -> dict:
             "vt_permalink": f"https://www.virustotal.com/gui/file/{sha256_hash}",
         }
 
-    if sha256_hash in VT_CACHE:
-        return VT_CACHE[sha256_hash]
+    with CACHE_LOCK:
+        if sha256_hash in VT_CACHE:
+            return VT_CACHE[sha256_hash]
 
     url = f"https://www.virustotal.com/api/v3/files/{sha256_hash}"
     headers = {
@@ -181,7 +191,7 @@ def get_virustotal_report(sha256_hash: str) -> dict:
                 "malware_family": str(family),
                 "vt_permalink": f"https://www.virustotal.com/gui/file/{sha256_hash}",
             }
-            VT_CACHE[sha256_hash] = res
+            _cache_set(VT_CACHE, sha256_hash, res)
             return res
     except urllib.error.HTTPError as e:
         if e.code == 404:
@@ -193,21 +203,19 @@ def get_virustotal_report(sha256_hash: str) -> dict:
                 "malware_family": "Inédito / Zero-Day (Não Catalogado)",
                 "vt_permalink": f"https://www.virustotal.com/gui/file/{sha256_hash}",
             }
-            VT_CACHE[sha256_hash] = res
+            _cache_set(VT_CACHE, sha256_hash, res)
             return res
         print(f"[!] Erro HTTP VirusTotal ({sha256_hash}): {e.code} - {e.reason}")
     except Exception as e:
         print(f"[!] Falha na consulta VirusTotal ({sha256_hash}): {e}")
 
-    fallback = {
+    return {
         "vt_checked": False,
         "vt_positives": 0,
         "vt_total": 0,
         "malware_family": "Desconhecido",
         "vt_permalink": f"https://www.virustotal.com/gui/file/{sha256_hash}",
     }
-    VT_CACHE[sha256_hash] = fallback
-    return fallback
 
 
 def inspect_binary_static(binary_data: bytes, sha256_hash: str) -> dict:
@@ -655,8 +663,6 @@ def lambda_handler(event, context):
             }
             enriched_items.append(item)
             total_processed += 1
-            if _has_sufficient_time(context):
-                send_discord_notification(item)
 
         if enriched_items:
             jsonl_payload = "\n".join(json.dumps(it, ensure_ascii=False) for it in enriched_items) + "\n"
@@ -675,6 +681,10 @@ def lambda_handler(event, context):
                 print(f"[OK] {len(enriched_items)} registros gravados com sucesso para o Athena.")
             except Exception as e:
                 print(f"[!] Erro ao salvar arquivo enriquecido no S3 ({output_key}): {e}")
+
+            for item in enriched_items:
+                if _has_sufficient_time(context):
+                    send_discord_notification(item)
 
     print(f"[OK] Processamento concluído com sucesso. Total de eventos enriquecidos: {total_processed}")
     return {"statusCode": 200, "total_processed": total_processed}

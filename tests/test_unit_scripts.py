@@ -288,6 +288,132 @@ class TestUnitScripts(unittest.TestCase):
                     elif orig_path.exists():
                         orig_path.unlink()
 
+    @patch("urllib.request.urlopen", side_effect=Exception("GeoIP Down"))
+    def test_generate_threat_report_corrupted_lines_and_geo_failure(self, mock_urlopen):
+        """Valida resiliencia do generate_threat_report contra linhas JSON corrompidas e falha de GeoIP."""
+        import scripts.generate_threat_report as rep_gen
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_file = Path(tmp_dir) / "corrupted.json"
+            log_file.write_text(
+                "\nNOT_VALID_JSON\n" + json.dumps({"eventid": "cowrie.login.failed", "src_ip": "198.51.100.99", "username": "u", "password": "p"}) + "\n",
+                encoding="utf-8"
+            )
+            with patch("scripts.generate_threat_report.glob.glob", return_value=[str(log_file)]):
+                orig_path = Path("logs_salvos/RELATORIO_THREAT_INTEL_REAL.md")
+                orig_content = orig_path.read_text(encoding="utf-8") if orig_path.exists() else None
+                try:
+                    Path("logs_salvos").mkdir(exist_ok=True)
+                    rep_gen.generate_report()
+                    content = orig_path.read_text(encoding="utf-8")
+                    self.assertIn("198.51.100.99", content)
+                    self.assertIn("Desconhecido", content)
+                finally:
+                    if orig_content is not None:
+                        orig_path.write_text(orig_content, encoding="utf-8")
+                    elif orig_path.exists():
+                        orig_path.unlink()
+
+    def test_parse_logs_blank_lines_and_duration_ms(self):
+        """Valida linhas em branco e formatacao de duration_ms no parse_logs.py."""
+        import scripts.parse_logs as parser
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sample_json = Path(tmp_dir) / "s2.json"
+            sample_md = Path(tmp_dir) / "s2.md"
+            sample_txt = Path(tmp_dir) / "s2.txt"
+
+            sample_json.write_text(
+                "\n"
+                + json.dumps({"session": "s2", "eventid": "cowrie.session.connect", "timestamp": "2026-10-07T10:00:00Z", "src_ip": "198.51.100.6", "src_port": 2222}) + "\n"
+                + json.dumps({"session": "s2", "eventid": "cowrie.session.closed", "timestamp": "2026-10-07T10:00:05Z", "duration_ms": 5000}) + "\n",
+                encoding="utf-8"
+            )
+            sessions = parser.parse_cowrie_file(str(sample_json))
+            parser.generate_markdown_report(sessions, str(sample_json), str(sample_md))
+            parser.generate_text_log(sessions, str(sample_txt))
+
+            self.assertIn("5.00s", sample_md.read_text(encoding="utf-8"))
+            self.assertIn("[DESCONEXAO]", sample_txt.read_text(encoding="utf-8"))
+
+    def test_backfill_default_args_with_mocked_boto3(self):
+        """Valida caminho de argumentos padrao (base_dir=None, bucket_name=None, s3_client=None) em backfill_enrichment.py."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sample_file = Path(tmp_dir) / "c.json"
+            sample_file.write_text(self.sample_lines[0] + "\n\n", encoding="utf-8")
+            with patch.object(backfill.Path, "glob", return_value=[sample_file]), \
+                 patch.object(backfill.boto3, "client") as mock_boto_client, \
+                 patch.object(backfill.handler, "get_geoip_info", return_value={
+                     "country_code": "BR", "country_name": "Brazil", "city": "SP",
+                     "latitude": 0.0, "longitude": 0.0, "isp": "ISP"
+                 }):
+                mock_s3 = MagicMock()
+                mock_boto_client.return_value = mock_s3
+                res = backfill.run_mining(base_dir=None, bucket_name=None, s3_client=None)
+                self.assertEqual(len(res), 1)
+                mock_boto_client.assert_called_once_with("s3", region_name="us-east-1")
+
+    # -------------------------------------------------------------------------
+    # Testes do simulate_adversary.py
+    # -------------------------------------------------------------------------
+    @patch("scripts.simulate_adversary.time.sleep")
+    @patch("scripts.simulate_adversary.paramiko.SSHClient")
+    def test_simulate_adversary_full_flow_and_exceptions(self, mock_ssh_cls, mock_sleep):
+        """Valida todos os ramos de simulate_adversary.py (AuthException, erro de rede, login aceito e shell)."""
+        import scripts.simulate_adversary as sim
+
+        # Configura clientes SSH simulados para as 6 tentativas de brute-force + 1 tentativa de sucesso
+        clients = []
+        for i in range(len(sim.FAILED_CREDENTIALS)):
+            c = MagicMock()
+            if i == 0:
+                c.connect.side_effect = sim.paramiko.AuthenticationException("Auth failed")
+            elif i == 1:
+                c.connect.side_effect = RuntimeError("Connection reset")
+            else:
+                # Simula login inesperadamente aceito na fase 1
+                c.connect.return_value = None
+            clients.append(c)
+
+        # Cliente da Fase 2 (sucesso com invoke_shell)
+        c_success = MagicMock()
+        mock_chan = MagicMock()
+        c_success.invoke_shell.return_value = mock_chan
+        clients.append(c_success)
+
+        mock_ssh_cls.side_effect = clients
+        sim.run_adversary_simulation()
+
+        self.assertEqual(mock_chan.send.call_count, len(sim.COMMANDS_TO_RUN))
+        c_success.close.assert_called_once()
+
+        # Testa tambem o ramo de excecao na Fase 2 (sessao interativa falha)
+        clients_fail_phase2 = [MagicMock() for _ in range(len(sim.FAILED_CREDENTIALS))]
+        c_fail2 = MagicMock()
+        c_fail2.connect.side_effect = RuntimeError("Interactive session timeout")
+        clients_fail_phase2.append(c_fail2)
+
+        mock_ssh_cls.side_effect = clients_fail_phase2
+        sim.run_adversary_simulation()
+
+    # -------------------------------------------------------------------------
+    # Testes do test_lambda_local.py
+    # -------------------------------------------------------------------------
+    def test_lambda_local_script_execution(self):
+        """Valida execucao de scripts/test_lambda_local.py com e sem arquivos de amostra."""
+        import scripts.test_lambda_local as tll
+
+        # 1. Caminho normal com logs reais (ou mock de glob)
+        with patch.object(tll.handler, "get_geoip_info", return_value={
+            "country_code": "US", "country_name": "United States", "city": "NYC",
+            "latitude": 40.7, "longitude": -74.0
+        }):
+            tll.test_local_enrichment()
+
+        # 2. Caminho quando nenhum arquivo JSON e encontrado
+        with patch.object(tll.Path, "glob", return_value=[]):
+            tll.test_local_enrichment()
+
 
 if __name__ == "__main__":
     unittest.main()

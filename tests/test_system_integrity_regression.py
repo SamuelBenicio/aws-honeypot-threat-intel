@@ -357,3 +357,37 @@ class TestGrafanaDashboardIntegrity:
         res = handler.process_malware_sample("test-b", "malware-samples/hash_noarg")
         assert res["sha256"] == "hash_noarg"
         assert res["magic_type"] == "Linux Shell Script"
+
+    def test_positive_only_cache_and_eviction_limit(self, monkeypatch):
+        """
+        Valida que falhas transientes de rede nao envenenam os caches (GEOIP_CACHE, ABUSE_CACHE, VT_CACHE)
+        e que _cache_set respeita o teto MAX_CACHE_ENTRIES.
+        """
+        handler.GEOIP_CACHE.clear()
+        handler.ABUSE_CACHE.clear()
+        handler.VT_CACHE.clear()
+        monkeypatch.setattr(handler, "ABUSEIPDB_API_KEY", "dummy_key")
+        monkeypatch.setattr(handler, "VIRUSTOTAL_API_KEY", "dummy_vt")
+
+        with patch("urllib.request.urlopen", side_effect=RuntimeError("Transient network blip")):
+            g_fb = handler.get_geoip_info("203.0.113.55")
+            a_fb = handler.get_abuseipdb_score("203.0.113.55")
+            v_fb = handler.get_virustotal_report("sha_transient")
+
+        assert g_fb["country_code"] == "XX"
+        assert a_fb["abuse_checked"] is False
+        assert v_fb["vt_checked"] is False
+
+        # Nenhum erro transiente deve ter sido persistido em cache
+        assert "203.0.113.55" not in handler.GEOIP_CACHE
+        assert "203.0.113.55" not in handler.ABUSE_CACHE
+        assert "sha_transient" not in handler.VT_CACHE
+
+        # Testa eviccao automatica quando o cache atinge MAX_CACHE_ENTRIES
+        monkeypatch.setattr(handler, "MAX_CACHE_ENTRIES", 2)
+        handler._cache_set(handler.GEOIP_CACHE, "1.1.1.1", {"country_code": "AU"})
+        handler._cache_set(handler.GEOIP_CACHE, "1.1.1.2", {"country_code": "US"})
+        assert len(handler.GEOIP_CACHE) == 2
+        handler._cache_set(handler.GEOIP_CACHE, "1.1.1.3", {"country_code": "BR"})
+        assert len(handler.GEOIP_CACHE) == 1
+        assert "1.1.1.3" in handler.GEOIP_CACHE

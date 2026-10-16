@@ -330,7 +330,7 @@
             "uid": "bg0n3v8edi8e8e"
           },
           "format": 1,
-          "rawSQL": "SELECT ip_address, country_name, city, latitude, longitude, login_attempts, successful_logins, isp FROM enriched_attacks WHERE latitude IS NOT NULL AND longitude IS NOT NULL;",
+          "rawSQL": "SELECT ip_address, arbitrary(country_name) as country_name, arbitrary(city) as city, arbitrary(latitude) as latitude, arbitrary(longitude) as longitude, sum(login_attempts) as login_attempts, sum(successful_logins) as successful_logins, arbitrary(isp) as isp FROM enriched_attacks WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND (latitude != 0 OR longitude != 0) GROUP BY ip_address;",
           "refId": "A"
         }
       ],
@@ -382,7 +382,7 @@
             "uid": "bg0n3v8edi8e8e"
           },
           "format": 1,
-          "rawSQL": "SELECT country_name as pais, count(*) as total_ataques FROM enriched_attacks GROUP BY country_name ORDER BY total_ataques DESC LIMIT 10;",
+          "rawSQL": "SELECT country_name as pais, coalesce(sum(login_attempts), count(*)) as total_ataques FROM enriched_attacks GROUP BY country_name ORDER BY total_ataques DESC LIMIT 10;",
           "refId": "A"
         }
       ],
