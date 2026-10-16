@@ -1,196 +1,250 @@
-# AWS Cowrie Honeypot - Pipeline de Threat Intelligence e Observabilidade
+# AWS Cowrie Honeypot - Pipeline de Threat Intelligence, Forense de Malware e Observabilidade
 
-Este projeto implementa um laboratório completo de Engenharia de Detecção, Threat Intelligence e Observabilidade na nuvem AWS. O ambiente expõe intencionalmente uma porta SSH de engodo (Honeypot Cowrie) para capturar varreduras, ataques de forca bruta e tentativas de intrusão da internet publica, processando esses eventos em um pipeline serverless e exibindo a telemetria em tempo quase real (near real-time) no Grafana Cloud.
+Este projeto implementa uma solucao corporativa de Engenharia de Deteccao, Threat Intelligence, Analise Forense Automatizada de Malwares e Observabilidade na nuvem AWS. O ambiente expoe intencionalmente uma porta SSH de engodo (Honeypot Cowrie) para capturar varreduras, ataques de forca bruta, comandos interativos e payloads maliciosos da internet publica, processando esses eventos em um pipeline serverless resiliente com auto-recuperacao (self-healing) e exibindo a telemetria em tempo real no Grafana Cloud.
 
 ---
 
 ## 1. Arquitetura da Solucao
 
-A solucao e dividida em cinco camadas desacopladas e orientadas a eventos:
+A solucao e dividida em seis camadas desacopladas, orientadas a eventos e protegidas por mecanismos de alta disponibilidade:
 
 ```text
-[ Internet / Scanners / Atacantes ]
+[ Internet / Scanners / Atacantes / Botnets ]
        │
        ▼ (Porta TCP/22)
 [ Host EC2 (t3.micro - Ubuntu 24.04 LTS) ]
-  • Cowrie Honeypot isolado em container Docker
+  • Cowrie Honeypot isolado em container Docker (UID 999)
   • Daemon OpenSSH real movido para porta administrativa TCP/22022
-  • Script de sincronizacao periódica (cronjob) com controle de cursor
+  • Mount somente leitura de /etc/ssh/moduli para suporte a ciphers legados (DH-GEX)
+  • Quarentena local de malwares com checagem de estabilizacao de download
+  • Watchdog de auto-recuperacao (auto-start e recuperacao de jsonlog)
+  • Sincronizador de logs com controle de cursor por inode e fatiamento via sed
        │
-       ▼ (Upload periódico de logs brutos)
+       ├─────────────────────────────────────────────┐
+       ▼ (cowrie-logs/year=YYYY/month=MM/day=DD/)   ▼ (malware-samples/<sha256>)
 [ Amazon S3 (Bucket Privado com Criptografia SSE-S3) ]
-  • Prefixo: cowrie-logs/year=YYYY/month=MM/day=DD/
-  • Lifecycle Rule: expiracao automatica em 30 dias
+  • cowrie-logs/: logs brutos particionados em Hive
+  • malware-samples/: binarios e scripts maliciosos em quarentena de nuvem
+  • Lifecycle Rules dedicadas: expiracao automatica em 60 dias
        │
-       ▼ (Evento nativo: s3:ObjectCreated:*)
-[ AWS Lambda (Runtime Python 3.12) ]
-  • Parser dos eventos brutos do Cowrie (conexoes, logins, comandos, downloads)
-  • Agregacao e desduplicacao de atacantes por lote
-  • Enriquecimento GeoIP (Pais, Cidade, Latitude, Longitude, ISP)
-  • Enriquecimento de Reputacao (AbuseIPDB API)
-  • Alerta condicional via Webhook do Discord (em caso de invasao confirmada)
+       ▼ (Gatilho nativo: s3:ObjectCreated:*)
+[ AWS Lambda (Runtime Python 3.12 - 128 MB) ]
+  • Roteamento inteligente de eventos (Logs Brutos vs. Amostras de Malware)
+  • Trilha A (Logs):
+      - Agregacao e deduplicacao de sessoes por IP
+      - Enriquecimento paralelo (ThreadPoolExecutor) de GeoIP e AbuseIPDB
+      - Caches em memoria thread-safe (Lock) com teto e protecao anticontaminacao
+      - Guardiao de tempo limite (Deadline Guard de 10s para garantir escrita no S3)
+  • Trilha B (Forense de Malware):
+      - Inspecao estatica autonoma: Magic Header (ELF/PE/Script), hashes MD5/SHA256
+      - Mineracao de IoCs embutidos (IPs de Command & Control e URLs)
+      - Heuristica de botnets (Mirai, Gafgyt, XMRig, Droppers)
+      - Consulta v3 a API do VirusTotal com deteccao de Zero-Days (HTTP 404)
+      - Leitura limitada a 10 MB para blindagem de memoria RAM da Lambda
+  • Alertas em tempo real via Webhook do Discord (intrusao e malwares)
        │
-       ▼ (Gravacao estruturada em JSON Lines)
-[ Amazon S3 (Telemetria Enriquecida) ]
-  • Prefixo: enriched-telemetry/
+       ├─────────────────────────────────────────────┐
+       ▼ (enriched-telemetry/)                       ▼ (enriched-malware/)
+[ Amazon S3 (Telemetria Estruturada em JSON Lines) ]
        │
-       ▼ (Consultas SQL sob demanda)
+       ▼ (Consultas SQL serverless com Trava FinOps de 100 MB)
 [ AWS Glue Data Catalog & Amazon Athena ]
   • Banco de Dados: cowrie_threat_intel
-  • Tabela Externa: enriched_attacks (OpenX JsonSerDe)
-  • Workgroup de FinOps: cowrie_analytics (trava de corte de 100 MB por query)
+  • Tabela 1: enriched_attacks (OpenX JsonSerDe)
+  • Tabela 2: enriched_malware (OpenX JsonSerDe)
+  • Workgroup FinOps: cowrie_analytics (bytes_scanned_cutoff = 104.857.600)
        │
-       ▼ (Autenticacao IAM com Menor Privilegio)
-[ Grafana Cloud (SOC Dashboard) ]
-  • Geomap Mundial interativo com distribuicao geografica dos atacantes
-  • Metricas executivas de forca bruta e comprometimento
-  • Ranking das credenciais mais visadas (Top Senhas e Usuarios)
-  • Tabela forense cronologica de comandos executados
+       ▼ (Autenticacao IAM de Menor Privilegio)
+[ Grafana Cloud (SOC Dashboard Unificado) ]
+  • 13 Paineis distribuidos em 5 sessoes analiticas
+  • Geomap Mundial com agrupamento por IP e expurgo de coordenadas nulas
+  • Painel Forense de Binarios, Familias de Malware e IoCs de C2
+  • Taxa de auto-refresh padrao de 5 minutos alinhada ao cron da EC2
 ```
 
 ---
 
 ## 2. Dashboard SOC ao Vivo (Grafana Cloud)
 
-O ambiente conta com um painel de monitoramento publicado no Grafana Cloud, permitindo a visualizacao publica e segura dos incidentes capturados pelo honeypot. A infraestrutura permanece ativa 24/7 na AWS capturando novas ameacas ininterruptamente, e os dados do dashboard sao atualizados automaticamente a cada 1 hora conforme novos acessos e tentativas de intrusao acontecem em tempo real:
+O ambiente conta com um painel de monitoramento publicado no Grafana Cloud, permitindo a visualizacao publica e segura dos incidentes capturados pelo honeypot. A infraestrutura permanece ativa 24/7 na AWS capturando novas ameacas ininterruptamente:
 
 * **Link Publico do Dashboard:** [https://greengoose3572.grafana.net/public-dashboards/e4a92d5e603c43398ffe69c190c9af4f](https://greengoose3572.grafana.net/public-dashboards/e4a92d5e603c43398ffe69c190c9af4f)
 
 ![Dashboard SOC no Grafana Cloud](docs/images/grafana_soc_dashboard.png)
 
-### Paineis e Metricas Visualizadas:
-1. **Tentativas de Acesso (Forca Bruta):** Total consolidado de tentativas de autenticacao SSH realizadas contra o endpoint (mais de 1.100 eventos agregados de um total de 7.200 interacoes brutas).
-2. **IPs Unicos Atacantes:** Contagem de enderecos IP distintos que dispararam varreduras e tentativas de intrusao (109 atacantes unicos mapeados).
-3. **Paises de Origem:** Dispersao geografica dos vetores de ataque, abrangendo 28 paises (principais origens: China, Estados Unidos, Russia, Coreia do Sul, Brasil, entre outros).
-4. **Logins Aceitos no Engodo:** Sessoes onde credenciais fracas configuradas intencionalmente permitiram o acesso do invasor ao shell simulado para captura de comportamento forense (60 acessos monitorados).
-5. **Geomap Mundial de Origem dos Atacantes:** Visualizacao cartografica interativa em mapa CartoDB Dark, plotando marcadores geograficos de acordo com a latitude, longitude e volume de tentativas de cada atacante.
-6. **Top 10 Paises com Maior Volume de Ataques:** Grafico de barras horizontais rankeando os paises com maior frequencia de requisicoes ofensivas.
-7. **Top 10 Senhas Mais Testadas em Forca Bruta:** Mineracao forense das credenciais mais utilizadas em ataques de dicionario (destaque para senhas padrao como `root`, `123456`, `admin`, `password`).
-8. **Historico de Comandos Executados:** Tabela cronologica de telemetria forense registrando comandos digitados pelos invasores durante sessoes ativas no honeypot (como tentativas de download de scripts maliciosos, comandos de reconhecimento como `uname -a`, `cat /proc/cpuinfo`, `id`, `whoami`).
+### Sessoes e Paineis do Dashboard SOC:
+
+### Sessao 1: Resumo do Perimetro - Metricas de Ataque
+1. **Tentativas de Acesso (Forca Bruta):** Total consolidado de tentativas de autenticacao SSH protegidas por expressao `COALESCE(..., 0)` para prevencao de estados nulos.
+2. **IPs Unicos Atacantes:** Contagem de enderecos IP distintos que dispararam varreduras e tentativas de invasao.
+3. **Paises de Origem:** Dispersao geografica internacional dos atacantes.
+4. **Logins Aceitos no Engodo:** Sessoes onde credenciais fracas configuradas intencionalmente permitiram o acesso do invasor ao shell simulado para captura de comportamento forense.
+
+### Sessao 2: Distribuicao Geografica de Ameacas
+5. **Geomap Mundial de Origem dos Atacantes:** Visualizacao cartografica em mapa CartoDB Dark com marcadores agregados por IP (`GROUP BY ip_address`), eliminando pontos sobrepostos e expurgando coordenadas invalidas `(0.0, 0.0)`.
+
+### Sessao 3: Analise de Taticas e Credenciais
+6. **Top 10 Paises com Maior Volume de Ataques:** Grafico de barras horizontais computando o volume total de tentativas de login por pais (`COALESCE(sum(login_attempts), count(*))`).
+7. **Top 10 Senhas Mais Testadas em Forca Bruta:** Mineracao forense das credenciais mais utilizadas nos dicionarios dos invasores (`UNNEST(passwords)`).
+
+### Sessao 4: Telemetria Forense de Comandos
+8. **Historico de Comandos Executados:** Tabela cronologica registrando comandos digitados pelos invasores durante sessoes ativas no honeypot (como reconhecimento de hardware, tentativas de download e scripts de mineracao).
+
+### Sessao 5: Analise Forense de Malware e Botnets
+9. **Amostras de Malware Interceptadas:** Metrica em tempo real do total de binarios capturados na quarentena.
+10. **Media de Deteccoes VirusTotal:** Indice medio de motores antivirus que detectaram as amostras analisadas.
+11. **Familias de Malware Identificadas:** Grafico Donut agrupando as ameacas catalogadas (Mirai, Gafgyt/Bashlite, Coinminers XMRig, Droppers).
+12. **Arquiteturas e Tipos de Binarios Interceptados:** Grafico de barras classificando o formato dos executaveis (ELF x86_64, ARM 32-bit, MIPS, Shell Scripts, Windows PE).
+13. **Registro Forense de Malwares e IoCs Extraidos:** Tabela detalhada contendo hash SHA-256, arquitetura, familia, score VirusTotal, lista de IPs de Command & Control (C2) embutidos no binario e link de auditoria externa.
 
 ---
 
-## 3. Mineracao e Enriquecimento de Dados (ETL de Threat Intelligence)
+## 3. Pipeline Forense Automatizado de Malware
 
-Os arquivos brutos gerados pelo Cowrie (`cowrie.json`) contem apenas eventos atomicos com enderecos IP de origem. Para viabilizar a analise visual no Grafana, o motor da Lambda executa um processo de mineracao e enriquecimento estruturado:
+Quando um invasor consegue acesso interativo ao Cowrie e baixa um payload via `curl`, `wget` ou redirecionamento de shell:
 
-1. **Extracao e Desduplicacao:**
-   * Agrupa centenas de tentativas de forca bruta provenientes do mesmo IP em uma unica entidade analitica por lote.
-   * Compila listas unicas de usuarios tentados, senhas testadas, comandos executados no shell simulado e arquivos baixados/injetados.
-
-2. **Resolucao Geografica (GeoIP):**
-   * Converte cada endereco IP publico em metadados geograficos precisos: codigo do pais (ISO-3166), nome do pais, cidade, latitude e longitude decimais.
-   * Mapeia a organizacao ou provedor de internet (ISP/ASN) responsavel pelo bloco de rede do invasor.
-
-3. **Reputacao de Ameacas (AbuseIPDB):**
-   * Consulta a API do AbuseIPDB para obter o `abuseConfidenceScore` (probabilidade de 0 a 100% de o IP ser um vetor malicioso ativo), historico de denuncias internacionais e classificacao de lista branca.
-
-4. **Persistencia Colunar em JSON Lines:**
-   * Grava os dados tratados no formato JSON Lines (um documento JSON valido por linha) compativel com o SerDe do Athena, permitindo consultas analiticas velozes sem exigir manutencao de bancos relacionais tradicionais.
-
----
-
-## 4. Operacao Continua 24/7 e Atualizacao Near Real-Time
-
-O pipeline opera ininterruptamente na nuvem AWS, mantendo o honeypot exposto para receber o fluxo constante de scanners e bots da internet publica:
-
-* **Captura Continua 24/7:** O container do Cowrie processa conexoes na porta TCP/22 em tempo real na EC2.
-* **Cadencia da Coleta:** A cada 5 minutos, o script sincronizador no host envia os novos registros gerados pelo Cowrie para o S3.
-* **Gatilho Instantaneo:** O evento `s3:ObjectCreated` aciona a Lambda em fracao de segundo, processando, enriquecendo e disponibilizando os dados no Athena imediatamente.
-* **Atualizacao Horaria no Grafana (1h):** O dashboard publico no Grafana Cloud esta configurado com taxa de atualizacao automatica de **1 hora** (com possibilidade de atualizacao manual instantanea pelo botao Refresh). Conforme os ataques ocorrem, as novas ameacas sao incorporadas aos paineis de hora em hora.
-
-### Otimizacao de Custos (FinOps):
-* **Reducao de Custos de 92%:** A cadencia de 1 em 1 hora reduz as execucoes de query no Athena de 1.728 para 144 por dia caso o painel permaneca aberto, mantendo o custo mensal do Athena abaixo de US$ 0,001.
-* **Preservacao de Cotas de API:** Processar em lotes agregados impede que ataques macicos de forca bruta esgotem o limite gratuito diario de consultas da API do AbuseIPDB.
+1. **Captura em Quarentena Local:** O Cowrie salva o arquivo na pasta isolada `var/lib/cowrie/downloads/` identificado pelo hash SHA-256.
+2. **Sincronizacao Segura:** O script `sync_logs_to_s3.sh` verifica a estabilizacao da escrita do arquivo (`SAMPLE_MTIME`) antes de realizar o upload para o prefixo `malware-samples/` no S3 e expurgar a copia local do host EC2.
+3. **Analise Estatica Autonoma na Lambda:**
+   * Leitura protegida (maximo de 10 MB por amostra) para blindar a memoria RAM do container serverless contra ataques de esgotamento.
+   * Deteccao de Magic Bytes: identifica binarios ELF (x86, x64, ARM, MIPS), scripts executaveis e PE.
+   * Extracao de strings ASCII e mineracao automatica de expressoes regulares para IoCs: identificacao de IPs de Command & Control (C2) e URLs secundarias.
+   * Classificacao heuristica de assinaturas de botnets de IoT e mineradores.
+4. **Enriquecimento com VirusTotal v3:**
+   * Consulta a API v3 da VirusTotal utilizando chave configurada no Terraform.
+   * Fallback gracioso: se a API Key nao for informada ou ocorrer erro de comunicacao, a classificacao heuristica prevalece sem interromper o pipeline.
+   * Tratamento de Zero-Days: respostas HTTP 404 sao catalogadas automaticamente como `Inedito / Zero-Day (Nao Catalogado)`.
+5. **Persistencia e Alertas:**
+   * Grava registro estruturado em `enriched-malware/` no S3, disponibilizando a telemetria imediatamente para consultas no Athena e exibicao no Grafana.
+   * Dispara alerta prioritario no canal do Discord contendo os top 5 IoCs minerados, tamanho e link permanente de auditoria.
 
 ---
 
-## 5. Seguranca da Infraestrutura e Menor Privilegio (IAM)
+## 4. Engenharia de Confiabilidade e Mecanismos de Auto-Recuperacao (Self-Healing)
 
-O ambiente foi construido seguindo padroes rigorosos de seguranca de nuvem:
+Para erradicar falhas de sincronizacao, congelamentos de dados e duplicidades na transicao de dias, foram implementadas blindagens tecnicas em todas as camadas:
 
-* **Isolamento de Rede (VPC Dedicada):** O laboratório opera em uma VPC propria (`10.0.0.0/24`), sem comunicacao com outros servicos ou VPCs da conta.
-* **Firewall de Saida Restritivo (Egress Filtering):** O Security Group bloqueia saidas irrestritas da EC2. Apenas portas estritamente necessarias (TCP/443 para APIs da AWS, TCP/80 para repositorios e UDP/TCP 53 para DNS) sao permitidas. Isso impede que o invasor utilize o servidor comprometido como no de saida para ataques de negacao de servico (DDoS) ou envio de spam.
-* **Isolamento de Portas SSH:**
-  * Porta TCP/22: Redirecionada para o container Docker do Cowrie (aberta ao mundo `0.0.0.0/0`).
-  * Porta TCP/22022: Porta real do sistema operacional Ubuntu (restrita exclusivamente ao IP do administrador).
-* **IAM de Menor Privilegio:**
-  * **Role da EC2:** Permite apenas `s3:PutObject` em `cowrie-logs/*`. A maquina nao tem permissao de leitura, listagem ampla ou exclusao.
-  * **Role da Lambda:** Permite apenas leitura dos logs brutos, escrita na pasta de telemetria enriquecida e logs no CloudWatch.
-  * **Usuario do Grafana (`cowrie-grafana-reader`):** Permissao restrita exclusivamente a execucao de consultas no Athena e leitura dos resultados no S3. Nao possui privilegios administrativos, de alteracao de regras ou de exclusao de dados.
-* **Disjuntor Financeiro do Athena:** O Workgroup `cowrie_analytics` impoe um teto maximo de **100 MB escaneados por consulta** (`BytesScannedCutoffPerQuery`). Se uma consulta ultrapassar esse limite, ela e abortada automaticamente pela AWS.
-* **Higienizacao de Segredos:** O arquivo `.gitignore` bloqueia chaves `.pem`, credenciais `.tfvars` e arquivos de estado, impedindo o envio acidental de dados sensiveis para o controle de versao.
+### 1. Watchdog do Container e Motor jsonlog
+* **Causa Raiz Tratada:** O container Cowrie roda internamente com UID 999. Caso permissões do host fossem alteradas, o Cowrie falhava ao abrir o `cowrie.json` e desativava silenciosamente o motor `jsonlog` em memoria.
+* **Auto-Recuperacao:** O script de sincronizacao verifica a cada 5 minutos o estado do container (`docker inspect`). Se detectar a mensagem `Failed to load output engine: jsonlog` ou a ausencia do arquivo de log, normaliza as permissoes (`chown 999:999` e `chmod a+rwX`) e reinicia o container automaticamente.
+* **Handshake SSH Estavel:** O arquivo `/etc/ssh/moduli` do host Ubuntu e montado como somente leitura (`:ro`) dentro do container, prevenindo erros de troca de chaves Diffie-Hellman em conexoes de bots antigos.
+
+### 2. Rastreamento de Rotacao por Inode e Fatiamento Deterministico
+* **Causa Raiz Tratada:** A rotacao diaria a meia-noite (Twisted DailyLogFile) renomeava o `cowrie.json` para `cowrie.json.YYYY-MM-DD` e criava um novo arquivo. A logica antiga reenviava o arquivo inteiro (gerando duplicidade) e sofria de *Midnight Gap* se o novo arquivo recebesse rajadas de ataque antes do cron.
+* **Blindagem por Inode:** O script armazena o `inode` do arquivo ativo em `.sync_last_inode`. Na mudanca de inode, identifica o arquivo rotacionado correspondente, extrai e envia **apenas o delta final nao sincronizado**, marca o rotacionado como concluido e reinicializa o cursor para o novo arquivo.
+* **Fatiamento Deterministico:** O fatiamento incremental do log utiliza `sed -n "${START_LINE},${TOTAL_LINES}p"`, eliminando condicoes de corrida caso novas linhas sejam anexadas pelo Cowrie durante a contagem.
+* **Tratamento de Linha Incompleta:** Caso a ultima linha capturada esteja incompleta (sem fechar com `}`), o script descarta o chunk incompleto e mantem o cursor intacto para leitura integral no ciclo seguinte.
+
+### 3. Concorrencia e Resiliencia na AWS Lambda
+* **Pre-aquecimento Paralelo:** Utiliza `ThreadPoolExecutor(max_workers=10)` para resolver GeoIP e AbuseIPDB simultaneamente em lotes de multiplos IPs, acelerando o processamento em ate 10x.
+* **Caches Protegidos por Trava (Lock):** Caches em memoria protegidos por `threading.Lock()` com teto de 2.000 entradas para evitar vazamento de memoria.
+* **Protecao Anticontaminacao:** Falhas transitorias de rede ou limites de taxa (HTTP 429) nao sao gravadas em cache, garantindo nova tentativa automatica nas consultas seguintes.
+* **Guardiao de Tempo Limite (Deadline Guard):** Monitora o tempo restante da Lambda (`context.get_remaining_time_in_millis()`). Se restarem menos de 10 segundos, forca fallback local imediato e prioriza a gravacao no S3, garantindo que o lote nunca seja descartado por timeout.
+* **Ordem de Gravacao Segura:** A telemetria analitica e gravada no S3 para o Athena **antes** de qualquer requisicao externa para webhooks do Discord.
 
 ---
 
-## 6. Estrutura do Repositorio
+## 5. Salvaguardas Financeiras e FinOps (Custo Zero)
+
+A arquitetura opera integralmente dentro do AWS Free Tier, mantendo custos abaixo de **US$ 0,001/mes**:
+
+1. **Amazon EC2:** Executa em instancia `t3.micro` elegivel a franquia gratuita de 750 horas/mes.
+2. **AWS Lambda:** Alocada com apenas `128 MB` de RAM. O paralelismo reduz o tempo de execucao, consumindo menos de 0,5% da franquia mensal gratuita de `400.000 GB-segundos`.
+3. **Amazon S3:** Regras de ciclo de vida (Lifecycle Rules) expurgam logs brutos, telemetria enriquecida e amostras de malware em 60 dias, mantendo o armazenamento muito abaixo do limite gratuito de 5 GB.
+4. **Disjuntor Financeiro do Athena:** O Workgroup `cowrie_analytics` impoe trava rigida de **100 MB escaneados por consulta** (`bytes_scanned_cutoff_per_query`). A eliminacao de duplicatas de rotacao e o particionamento mantem o escaneamento real abaixo de 1 MB por query.
+5. **Cotas de APIs Externas:** O agrupamento de eventos e o cache em memoria protegem as cotas gratuitas diarias do AbuseIPDB e do VirusTotal.
+
+---
+
+## 6. Cobertura de Testes Automatizados
+
+O projeto mantem uma suite de testes unitarios, de regressao e de integracao com **115 testes automatizados aprovados** e **98% de cobertura global de codigo** (100% no motor principal do Lambda):
+
+```bash
+pytest --cov=lambda --cov=scripts -v
+```
+
+### Relatorio de Cobertura de Codigo:
+
+| Modulo / Script | Total Statements | Linhas Nao Cobertas | Cobertura (%) |
+| :--- | :---: | :---: | :---: |
+| `lambda/handler.py` | 333 | 0 | **100%** |
+| `scripts/analyze_2days.py` | 89 | 1 | **99%** |
+| `scripts/generate_threat_report.py` | 72 | 1 | **99%** |
+| `scripts/simulate_adversary.py` | 43 | 1 | **98%** |
+| `scripts/test_lambda_local.py` | 36 | 1 | **97%** |
+| `scripts/backfill_enrichment.py` | 68 | 3 | **96%** |
+| `scripts/parse_logs.py` | 106 | 8 | **92%** |
+| **TOTAL CONSOLIDADO** | **747** | **15** | **98%** |
+
+### Escopo das Suites de Teste:
+* `tests/test_unit_malware_pipeline.py`: Validacao de headers ELF/PE/Script, assinaturas de botnets Mirai/Gafgyt, mineracao de IoCs/C2, VirusTotal v3 e tratamento de Zero-Days.
+* `tests/test_sync_rotation_logic.py`: Validacao de expressoes regulares, deduplicacao por inode, fatiamento deterministico via `sed`, descarte seguro de linhas incompletas e retencao de disco.
+* `tests/test_system_integrity_regression.py`: Validacao de integridade das tabelas Glue (`enriched_attacks` e `enriched_malware`), isolamento de prefixos S3, travamento financeiro FinOps e testes do Deadline Guard.
+* `tests/test_unit_scripts.py`: Cobertura completa de scripts de mineracao historica, relatorios forenses e emulador de adversario.
+* `tests/test_terraform_spec.py`: Auditoria estatica de seguranca da infraestrutura IaC (criptografia EBS, isolamento de portas, politicas IAM restritivas).
+
+---
+
+## 7. Estrutura do Repositorio
 
 ```plaintext
 aws-honeypot-threat-intel/
 ├── PROJECT_SPEC.md              # Especificacoes e premissas do projeto
-├── README.md                    # Documentacao tecnica da arquitetura
-├── .gitignore                   # Politicas de exclusao de credenciais e chaves
+├── README.md                    # Documentacao tecnica completa da arquitetura
+├── .gitignore                   # Higienizacao estrita de chaves, credenciais e tfstate
 ├── docs/
 │   └── images/
 │       └── grafana_soc_dashboard.png # Captura de tela do SOC Dashboard no Grafana Cloud
 ├── terraform/                   # Infraestrutura como Codigo (IaC)
-│   ├── main.tf                  # Versoes e provedor AWS
-│   ├── variables.tf             # Parametros de rede, portas e chaves
-│   ├── vpc.tf                   # VPC isolada, subnet publica e internet gateway
+│   ├── main.tf                  # Provedores e versoes minimas
+│   ├── variables.tf             # Variaveis de rede, portas e retencao
+│   ├── vpc.tf                   # VPC isolada, subnet publica e gateway
 │   ├── security_groups.tf       # Regras restritivas de ingress e egress
-│   ├── s3.tf                    # Bucket de logs, bloqueio publico e lifecycle
-│   ├── ec2.tf                   # Host t3.micro e script de inicializacao (User Data)
-│   ├── lambda.tf                # Provisionamento da Lambda e triggers do S3
-│   ├── athena.tf                # Banco Glue, Workgroup FinOps e tabela externa
-│   ├── grafana_iam.tf           # Usuario IAM e credenciais para o Grafana Cloud
-│   └── outputs.tf               # Dados de conexao exportados
+│   ├── s3.tf                    # Bucket de logs, quarentena e lifecycle rules
+│   ├── ec2.tf                   # EC2 t3.micro, User Data com bootstrap e sync_logs_to_s3.sh
+│   ├── lambda.tf                # Funcao Lambda, role IAM e gatilhos de evento S3
+│   ├── athena.tf                # Glue Catalog, tabelas enriched_attacks e enriched_malware
+│   ├── grafana_iam.tf           # Usuario de menor privilegio para consultas no Grafana
+│   ├── lambda_payload.zip       # Pacote implantavel da Lambda em producao
+│   └── outputs.tf               # Identificadores de infraestrutura exportados
 ├── lambda/
-│   └── handler.py               # Motor Python de parser, GeoIP e AbuseIPDB
+│   └── handler.py               # Motor de parser, enriquecimento, analise forense e alertas
 ├── grafana/
-│   └── honeypot_soc_dashboard.json # Modelo exportavel do Dashboard SOC com datasource vinculada
+│   └── honeypot_soc_dashboard.json # Definicao exportavel com 13 paineis e 5 sessoes
 ├── scripts/
-│   ├── backfill_enrichment.py   # Script de mineracao e carga inicial historica
-│   ├── sync_logs_to_s3.sh       # Script de sincronizacao periodica na EC2
-│   └── test_lambda_local.py     # Script de validacao local do parser
-└── tests/                       # Suite automatizada de testes (Pytest)
-    ├── conftest.py              # Fixtures e configuracoes de teste
-    ├── test_unit_lambda_parser.py # Testes unitarios do parser e GeoIP
-    ├── test_unit_threat_intel.py # Testes de resiliencia do AbuseIPDB e alertas
-    ├── test_integration_s3_athena.py # Testes de integracao com Athena e Glue
-    └── test_security_compliance.py # Testes de compliance, IAM e FinOps
+│   ├── analyze_2days.py         # Relatorio estatistico de ataques
+│   ├── backfill_enrichment.py   # Script de carga inicial e mineracao historica
+│   ├── generate_threat_report.py # Gerador de relatorio executivo Markdown
+│   ├── parse_logs.py            # Conversor de telemetria bruta para formatos legiveis
+│   ├── simulate_adversary.py    # Emulador de adversario automatizado para testes
+│   └── test_lambda_local.py     # Script de execucao e validacao local da Lambda
+└── tests/                       # Suite de testes automatizados (115 testes - 98% cobertura)
+    ├── test_unit_malware_pipeline.py
+    ├── test_sync_rotation_logic.py
+    ├── test_system_integrity_regression.py
+    ├── test_unit_lambda_handler_full.py
+    ├── test_unit_scripts.py
+    ├── test_terraform_spec.py
+    ├── test_unit_lambda_parser.py
+    ├── test_unit_threat_intel.py
+    ├── test_integration_s3_athena.py
+    └── test_security_compliance.py
 ```
 
 ---
 
-## 7. Cobertura de Testes Automatizados
+## 8. Como Executar e Importar o Painel no Grafana Cloud
 
-O repositorio conta com uma suite de testes automatizados com 100% de aprovacao utilizando o framework `pytest`:
+### 1. Importacao do Dashboard:
+1. No seu Grafana Cloud, acesse o menu lateral e clique em **Dashboards** > **New** > **Import**.
+2. Abra o arquivo [`grafana/honeypot_soc_dashboard.json`](grafana/honeypot_soc_dashboard.json), copie o conteudo JSON e cole na area de texto.
+3. Clique em **Load**, selecione a sua data source configurada do **Amazon Athena** e confirme a importacao.
 
-```bash
-pytest -v tests/
-```
-
-### Escopo dos Testes:
-* **Validacao de FinOps:** Comprova via AWS SDK que a trava de 100 MB do Athena esta ativa.
-* **Integridade do Glue Catalog:** Valida os tipos de dados e a existencia das colunas requeridas pelo Grafana.
-* **Execucao de Queries SQL:** Executa consultas analiticas reais no Athena e valida o formato das respostas.
-* **Resiliencia de Parser:** Testa a extracao com logs truncados, caracteres invalidos e enderecos IP locais.
-* **Conformidade de Seguranca:** Audita as politicas IAM para garantir a ausencia de permissoes de exclusao ou administrativas indevidas.
-
----
-
-## 8. Como Importar e Compartilhar o Dashboard no Grafana Cloud
-
-### Importacao do Painel:
-1. No Grafana Cloud, acesse **Dashboards** > **New** > **Import**.
-2. Abra o arquivo [`grafana/honeypot_soc_dashboard.json`](grafana/honeypot_soc_dashboard.json), copie o conteudo e cole na caixa de texto.
-3. Clique em **Load**, selecione a sua data source do Amazon Athena e conclua a importacao.
-
-### Como Disponibilizar o Dashboard Publicamente na Internet:
-O Grafana Cloud possui o recurso nativo **Public Dashboards**, que permite gerar um link publico de visualizacao interativa segura sem expor credenciais ou exigir login dos visitantes:
-
-1. Abra o dashboard no Grafana Cloud.
-2. Clique no icone de **Compartilhar** (Share) no canto superior direito.
+### 2. Compartilhamento Publico Seguro:
+O Grafana Cloud permite disponibilizar o painel publicamente em modo somente leitura sem expor credenciais:
+1. Abra o dashboard importado.
+2. No canto superior direito, clique no botao **Share** (Compartilhar).
 3. Selecione a aba **Public dashboard**.
-4. Clique em **Generate public URL** e ative a opcao.
-5. Copie o link publico gerado. O painel podera ser visualizado por qualquer pessoa na internet em modo somente-leitura.
+4. Ative a opcao **Generate public URL**.
+5. Copie o link gerado para disponibilizar a visualizacao interativa dos incidentes em tempo real.
